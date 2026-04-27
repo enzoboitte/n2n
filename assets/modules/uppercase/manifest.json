@@ -1,0 +1,15 @@
+{
+  "id": "uppercase",
+  "name": "Majuscules",
+  "description": "Convertit le texte d'entrée en majuscules.",
+  "version": "0.2.0",
+  "color": "#6366f1",
+  "entry": "module.py",
+  "inputs": [
+    { "name": "text", "label": "Texte", "type": "string" }
+  ],
+  "outputs": [
+    { "name": "text", "label": "Texte", "type": "string" }
+  ],
+  "params": []
+}

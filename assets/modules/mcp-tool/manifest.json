@@ -1,0 +1,29 @@
+{
+  "id": "mcp-tool",
+  "name": "MCP",
+  "description": "Appelle un outil exposé par un serveur MCP enregistré (GitHub, Filesystem, Brave Search…). Le formulaire d'arguments se construit depuis le schéma de l'outil sélectionné. Géré par le runtime.",
+  "version": "0.3.0",
+  "color": "#a855f7",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [{ "name": "args", "label": "Arguments (override dict)", "type": "any" }],
+  "outputs": [
+    { "name": "content", "label": "Contenu", "type": "any" },
+    { "name": "text", "label": "Texte (concat)", "type": "string" },
+    { "name": "isError", "label": "Erreur ?", "type": "boolean" }
+  ],
+  "params": [
+    {
+      "name": "target",
+      "label": "Outil MCP",
+      "type": "mcp-target",
+      "default": ""
+    },
+    {
+      "name": "arguments",
+      "label": "Arguments",
+      "type": "mcp-arguments",
+      "default": {}
+    }
+  ]
+}

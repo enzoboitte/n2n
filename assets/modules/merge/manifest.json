@@ -1,0 +1,11 @@
+{
+  "id": "merge",
+  "name": "Fusionner",
+  "description": "Combine toutes les arêtes entrantes en un dict {a: …, b: …, c: …} (par lettre).",
+  "version": "0.1.0",
+  "color": "#6366f1",
+  "entry": "module.py",
+  "inputs": [{ "name": "value", "label": "Valeurs", "type": "any" }],
+  "outputs": [{ "name": "value", "label": "Dict", "type": "any" }],
+  "params": []
+}

@@ -1,0 +1,15 @@
+{
+  "id": "text",
+  "name": "Texte",
+  "description": "Émet une chaîne de caractères fixe.",
+  "version": "0.2.0",
+  "color": "#10b981",
+  "entry": "module.py",
+  "inputs": [],
+  "outputs": [
+    { "name": "text", "label": "Texte", "type": "string" }
+  ],
+  "params": [
+    { "name": "value", "label": "Valeur", "type": "string", "default": "Hello, n2n" }
+  ]
+}

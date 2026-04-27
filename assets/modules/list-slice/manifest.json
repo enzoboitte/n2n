@@ -1,0 +1,22 @@
+{
+  "id": "list-slice",
+  "name": "Slice de liste",
+  "description": "Extrait un sous-ensemble d'une liste : N premiers, N derniers, ou intervalle.",
+  "version": "0.1.0",
+  "color": "#06b6d4",
+  "entry": "module.py",
+  "inputs": [{ "name": "list", "label": "Liste", "type": "any" }],
+  "outputs": [{ "name": "list", "label": "Liste", "type": "any" }],
+  "params": [
+    {
+      "name": "mode",
+      "label": "Mode",
+      "type": "select",
+      "options": ["first", "last", "range"],
+      "default": "first"
+    },
+    { "name": "n", "label": "N (first/last)", "type": "string", "default": "10" },
+    { "name": "start", "label": "Début (range)", "type": "string", "default": "0" },
+    { "name": "end", "label": "Fin (range)", "type": "string", "default": "" }
+  ]
+}

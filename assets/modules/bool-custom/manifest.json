@@ -1,0 +1,22 @@
+{
+  "id": "bool-custom",
+  "name": "Booléen personnalisé",
+  "description": "Évalue une expression Python sur les valeurs entrantes (variables a, b, c… + variables d'env).",
+  "version": "0.3.0",
+  "color": "#a855f7",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [{ "name": "value", "label": "Valeurs", "type": "any" }],
+  "outputs": [
+    { "name": "true", "label": "Vrai", "type": "any" },
+    { "name": "false", "label": "Faux", "type": "any" }
+  ],
+  "params": [
+    {
+      "name": "expression",
+      "label": "Expression",
+      "type": "text",
+      "default": "len(str(b)) > 5"
+    }
+  ]
+}

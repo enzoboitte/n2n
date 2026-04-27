@@ -1,0 +1,19 @@
+{
+  "id": "subworkflow",
+  "name": "Sous-workflow",
+  "description": "Exécute un autre projet comme un nœud. La valeur d'entrée est exposée via la var d'env __input__ ; le résultat de la dernière feuille du sous-projet est renvoyé. Géré par le runtime.",
+  "version": "0.1.0",
+  "color": "#8b5cf6",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [{ "name": "value", "label": "Valeur", "type": "any" }],
+  "outputs": [{ "name": "value", "label": "Sortie", "type": "any" }],
+  "params": [
+    {
+      "name": "project_id",
+      "label": "ID du projet enfant",
+      "type": "string",
+      "default": ""
+    }
+  ]
+}

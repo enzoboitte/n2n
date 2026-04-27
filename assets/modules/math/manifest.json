@@ -1,0 +1,14 @@
+{
+  "id": "math",
+  "name": "Math",
+  "description": "Évalue une expression numérique. Les lettres a, b, c… sont les valeurs entrantes ; toutes les variables d'env sont disponibles.",
+  "version": "0.1.0",
+  "color": "#14b8a6",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [{ "name": "value", "label": "Valeurs", "type": "any" }],
+  "outputs": [{ "name": "value", "label": "Résultat", "type": "number" }],
+  "params": [
+    { "name": "expression", "label": "Expression", "type": "text", "default": "a + b" }
+  ]
+}

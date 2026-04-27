@@ -1,0 +1,14 @@
+{
+  "id": "split",
+  "name": "Split",
+  "description": "Découpe une chaîne en liste selon un séparateur.",
+  "version": "0.1.0",
+  "color": "#06b6d4",
+  "entry": "module.py",
+  "inputs": [{ "name": "text", "label": "Texte", "type": "string" }],
+  "outputs": [{ "name": "list", "label": "Liste", "type": "any" }],
+  "params": [
+    { "name": "separator", "label": "Séparateur", "type": "string", "default": "," },
+    { "name": "trim", "label": "Trimer chaque élément", "type": "boolean", "default": true }
+  ]
+}

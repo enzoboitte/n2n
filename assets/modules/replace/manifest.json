@@ -1,0 +1,14 @@
+{
+  "id": "replace",
+  "name": "Remplacer",
+  "description": "Remplace toutes les occurrences d'une sous-chaîne par une autre.",
+  "version": "0.1.0",
+  "color": "#f43f5e",
+  "entry": "module.py",
+  "inputs": [{ "name": "text", "label": "Texte", "type": "string" }],
+  "outputs": [{ "name": "text", "label": "Texte", "type": "string" }],
+  "params": [
+    { "name": "find", "label": "Chercher", "type": "string", "default": "" },
+    { "name": "replace", "label": "Par", "type": "string", "default": "" }
+  ]
+}

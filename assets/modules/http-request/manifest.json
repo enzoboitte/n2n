@@ -1,0 +1,84 @@
+{
+  "id": "http-request",
+  "name": "Requête HTTP",
+  "description": "Appel HTTP/HTTPS complet : auth, query, headers, body, timeout, redirections, SSL, lecture en chunks.",
+  "version": "0.3.0",
+  "color": "#f59e0b",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [],
+  "outputs": [
+    { "name": "status", "label": "Status", "type": "number" },
+    { "name": "body", "label": "Body", "type": "string" },
+    { "name": "headers", "label": "Headers", "type": "object" },
+    { "name": "ok", "label": "OK (2xx)", "type": "boolean" }
+  ],
+  "params": [
+    {
+      "name": "method",
+      "label": "Méthode",
+      "type": "select",
+      "options": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+      "default": "GET"
+    },
+    {
+      "name": "url",
+      "label": "URL",
+      "type": "string",
+      "default": "https://httpbin.org/anything"
+    },
+    { "name": "query", "label": "Query params", "type": "kv", "default": {} },
+    { "name": "headers", "label": "En-têtes", "type": "kv", "default": {} },
+    {
+      "name": "auth_type",
+      "label": "Authentification",
+      "type": "select",
+      "options": ["none", "bearer", "basic"],
+      "default": "none"
+    },
+    {
+      "name": "auth_value",
+      "label": "Token / user:pass",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "content_type",
+      "label": "Content-Type",
+      "type": "select",
+      "options": [
+        "",
+        "application/json",
+        "application/x-www-form-urlencoded",
+        "text/plain",
+        "application/xml"
+      ],
+      "default": ""
+    },
+    { "name": "body", "label": "Corps", "type": "text", "default": "" },
+    {
+      "name": "timeout",
+      "label": "Timeout (s)",
+      "type": "string",
+      "default": "30"
+    },
+    {
+      "name": "follow_redirects",
+      "label": "Suivre les redirections",
+      "type": "boolean",
+      "default": true
+    },
+    {
+      "name": "verify_ssl",
+      "label": "Vérifier SSL",
+      "type": "boolean",
+      "default": true
+    },
+    {
+      "name": "max_response_bytes",
+      "label": "Taille max réponse (0 = illimité)",
+      "type": "string",
+      "default": "0"
+    }
+  ]
+}

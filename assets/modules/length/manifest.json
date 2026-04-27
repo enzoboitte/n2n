@@ -1,0 +1,11 @@
+{
+  "id": "length",
+  "name": "Longueur",
+  "description": "Renvoie la longueur d'une chaîne, liste ou dict.",
+  "version": "0.1.0",
+  "color": "#6366f1",
+  "entry": "module.py",
+  "inputs": [{ "name": "value", "label": "Valeur", "type": "any" }],
+  "outputs": [{ "name": "length", "label": "Longueur", "type": "number" }],
+  "params": []
+}

@@ -1,0 +1,19 @@
+{
+  "id": "for-each",
+  "name": "Pour chaque",
+  "description": "Itère sur une liste et exécute un sous-projet pour chaque item. Chaque item est passé via la var d'env __item__. Renvoie la liste des résultats. Géré par le runtime.",
+  "version": "0.1.0",
+  "color": "#8b5cf6",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [{ "name": "list", "label": "Liste", "type": "any" }],
+  "outputs": [{ "name": "results", "label": "Résultats", "type": "any" }],
+  "params": [
+    {
+      "name": "project_id",
+      "label": "ID du projet enfant",
+      "type": "string",
+      "default": ""
+    }
+  ]
+}

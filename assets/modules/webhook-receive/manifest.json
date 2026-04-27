@@ -1,0 +1,55 @@
+{
+  "id": "webhook-receive",
+  "name": "Webhook entrant",
+  "description": "Reçoit des requêtes HTTP sur http://localhost:9999/webhook/<path>. La réponse renvoyée à l'appelant est entièrement paramétrable (statut, content-type, body, headers) avec substitution des données de la requête : {request.method}, {request.body}, {request.json.foo}, {request.query.bar}, {request.headers.user-agent}, et des variables d'env globales.",
+  "version": "0.2.0",
+  "color": "#0ea5e9",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [],
+  "outputs": [
+    { "name": "method", "label": "Méthode", "type": "string" },
+    { "name": "body", "label": "Body brut", "type": "string" },
+    { "name": "json", "label": "Body JSON parsé", "type": "any" },
+    { "name": "query", "label": "Query params", "type": "any" },
+    { "name": "headers", "label": "Headers", "type": "any" }
+  ],
+  "params": [
+    {
+      "name": "path",
+      "label": "Chemin (sans /webhook/)",
+      "type": "string",
+      "default": "incoming"
+    },
+    {
+      "name": "response_status",
+      "label": "Status HTTP",
+      "type": "string",
+      "default": "200"
+    },
+    {
+      "name": "response_content_type",
+      "label": "Content-Type",
+      "type": "select",
+      "options": [
+        "application/json",
+        "text/plain",
+        "text/html",
+        "application/xml"
+      ],
+      "default": "application/json"
+    },
+    {
+      "name": "response_body",
+      "label": "Body de réponse",
+      "type": "text",
+      "default": "{\"ok\": true}"
+    },
+    {
+      "name": "response_headers",
+      "label": "Headers additionnels",
+      "type": "kv",
+      "default": {}
+    }
+  ]
+}

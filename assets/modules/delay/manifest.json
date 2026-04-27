@@ -1,0 +1,13 @@
+{
+  "id": "delay",
+  "name": "Délai",
+  "description": "Attend N millisecondes puis relaie la valeur d'entrée.",
+  "version": "0.1.0",
+  "color": "#f97316",
+  "entry": "module.py",
+  "inputs": [{ "name": "value", "label": "Valeur", "type": "any" }],
+  "outputs": [{ "name": "value", "label": "Valeur", "type": "any" }],
+  "params": [
+    { "name": "ms", "label": "Millisecondes", "type": "string", "default": "500" }
+  ]
+}

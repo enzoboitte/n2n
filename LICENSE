@@ -1,0 +1,149 @@
+Licence Propriétaire n2n
+========================
+
+Copyright (c) 2025 Enzo BOITTE <enzoboitte63000@gmail.com>
+Tous droits réservés.
+
+
+1. DÉFINITIONS
+
+   « Logiciel » désigne le code source, les fichiers, les ressources et la
+   documentation contenus dans le dépôt n2n, ainsi que toute version
+   ultérieure publiée par l'Auteur.
+
+   « Auteur » désigne le titulaire des droits patrimoniaux ci-dessus
+   nommé.
+
+   « Vous » désigne toute personne physique ou morale qui télécharge,
+   consulte, copie, fork, contribue à, ou utilise le Logiciel de quelque
+   manière que ce soit.
+
+
+2. ATTRIBUTION DES DROITS
+
+   L'Auteur conserve l'intégralité des droits patrimoniaux et moraux sur
+   le Logiciel. Aucune permission, hors celles explicitement accordées
+   par la présente Licence, n'est concédée par défaut.
+
+
+3. UTILISATION AUTORISÉE SANS CONTREPARTIE
+
+   Sont permis librement et gratuitement, à des fins strictement
+   personnelles et non lucratives :
+
+   a. La consultation du code source à des fins d'étude.
+   b. Le clonage et le fork du dépôt, à condition que ces copies soient
+      conservées à usage privé OU utilisées exclusivement pour soumettre
+      des contributions (Pull Requests) au dépôt original.
+   c. L'exécution locale du Logiciel sur sa propre machine sans
+      redistribution ni mise à disposition à des tiers.
+
+
+4. CONTRIBUTIONS
+
+   Toute contribution soumise au dépôt original (Pull Request, patch,
+   suggestion intégrée) est réputée cédée irrévocablement à l'Auteur
+   sous les mêmes termes que la présente Licence. En soumettant une
+   contribution, le contributeur déclare détenir les droits nécessaires
+   et accepte le transfert des droits patrimoniaux portant sur cette
+   contribution à l'Auteur.
+
+
+5. MODIFICATIONS, DÉRIVATIONS ET REDISTRIBUTIONS
+
+   Il est INTERDIT, sauf autorisation écrite et explicite de l'Auteur :
+
+   a. de modifier le Logiciel, de produire un travail dérivé ou de le
+      recompiler en vue d'une diffusion ;
+   b. de redistribuer le Logiciel, modifié ou non, sous quelque forme
+      que ce soit (binaire, source, conteneur, paquet) ;
+   c. de publier le Logiciel ou un dérivé sur un autre dépôt, registre,
+      marketplace, plateforme de paquets ou réseau de distribution.
+
+   La seule exception à cet article 5 est la soumission d'une
+   contribution au dépôt original au sens de l'article 4.
+
+
+6. USAGE COMMERCIAL — REVENU PARTAGÉ
+
+   L'utilisation du Logiciel à des fins lucratives, directement ou
+   indirectement, est INTERDITE par défaut.
+
+   Une autorisation d'usage commercial peut être accordée par l'Auteur,
+   matérialisée par un accord écrit, sous la condition expresse du
+   reversement à l'Auteur de VINGT POUR CENT (20%) du CHIFFRE
+   D'AFFAIRES BRUT généré par tout produit, service, activité ou
+   prestation reposant en tout ou en partie sur le Logiciel ou ses
+   dérivés.
+
+   Sont notamment, sans que cette liste soit limitative, considérés
+   comme usages commerciaux :
+
+   a. la revente, la sous-licence ou la cession du Logiciel ;
+   b. son intégration dans un produit ou un service payant, qu'il
+      s'agisse d'une vente unitaire, d'un abonnement, d'un freemium,
+      d'achats intégrés ou de tout autre modèle économique ;
+   c. son utilisation dans le cadre d'une prestation de conseil,
+      d'intégration, de maintenance ou de formation rémunérée ;
+   d. son hébergement ou sa mise à disposition à des tiers via une
+      offre SaaS, PaaS, IaaS ou tout autre service en ligne payant ;
+   e. son utilisation interne par une entité commerciale dans le but
+      direct de générer un revenu (workflows automatisant des
+      opérations facturées à des clients, par exemple).
+
+   La déclaration de chiffre d'affaires correspondant et le versement
+   sont dus à l'Auteur sur une base trimestrielle, payables dans les
+   trente (30) jours suivant la fin de chaque trimestre civil. Toute
+   somme non versée à l'échéance porte intérêts au taux légal en
+   vigueur, sans mise en demeure préalable.
+
+   Toute utilisation commerciale sans accord écrit constitue une
+   violation manifeste de la présente Licence et engage la
+   responsabilité de Vous, ouvrant droit à l'Auteur à toute action
+   judiciaire, civile ou pénale, ainsi qu'aux dommages-intérêts
+   correspondants.
+
+
+7. CESSATION DE PLEIN DROIT
+
+   Toute violation de la présente Licence entraîne, de plein droit
+   et sans formalité préalable, la résiliation immédiate de tous les
+   droits accordés à Vous au titre de la présente Licence. Vous êtes
+   alors tenu·e de cesser immédiatement toute utilisation du Logiciel
+   et de détruire toute copie en votre possession.
+
+
+8. ABSENCE DE GARANTIE
+
+   LE LOGICIEL EST FOURNI « EN L'ÉTAT », SANS AUCUNE GARANTIE EXPRESSE
+   OU IMPLICITE, Y COMPRIS, DE MANIÈRE NON LIMITATIVE, LES GARANTIES DE
+   QUALITÉ MARCHANDE, D'ADÉQUATION À UN USAGE PARTICULIER OU D'ABSENCE
+   DE CONTREFAÇON. EN AUCUN CAS L'AUTEUR NE POURRA ÊTRE TENU
+   RESPONSABLE DE TOUT DOMMAGE DIRECT OU INDIRECT, MATÉRIEL OU
+   IMMATÉRIEL, RÉSULTANT DE L'UTILISATION OU DE L'IMPOSSIBILITÉ
+   D'UTILISER LE LOGICIEL.
+
+
+9. DROIT APPLICABLE — JURIDICTION
+
+   La présente Licence est régie par le droit français. Tout litige
+   relatif à son interprétation ou à son exécution relève de la
+   compétence exclusive des tribunaux français du ressort du siège ou
+   du domicile de l'Auteur.
+
+
+10. CONTACT — DEMANDES D'AUTORISATION
+
+    Pour toute demande d'autorisation, négociation d'accord commercial,
+    accord de partenariat ou question relative à la présente Licence,
+    contacter :
+
+        Enzo BOITTE
+        enzoboitte63000@gmail.com
+
+
+───────────────────────────────────────────────────────────────────────
+EN UTILISANT, COPIANT, FORKANT OU CONTRIBUANT AU LOGICIEL, VOUS
+RECONNAISSEZ AVOIR PRIS CONNAISSANCE DES TERMES DE LA PRÉSENTE LICENCE
+ET LES ACCEPTER SANS RÉSERVE.
+───────────────────────────────────────────────────────────────────────

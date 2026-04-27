@@ -1,0 +1,19 @@
+{
+  "id": "list-filter",
+  "name": "Filtrer liste",
+  "description": "Garde les éléments d'une liste pour lesquels une expression Python est vraie. La variable `item` représente chaque élément.",
+  "version": "0.1.0",
+  "color": "#06b6d4",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [{ "name": "list", "label": "Liste", "type": "any" }],
+  "outputs": [{ "name": "list", "label": "Liste filtrée", "type": "any" }],
+  "params": [
+    {
+      "name": "expression",
+      "label": "Expression (item)",
+      "type": "text",
+      "default": "True"
+    }
+  ]
+}

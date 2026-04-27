@@ -1,0 +1,19 @@
+{
+  "id": "list-map",
+  "name": "Mapper liste",
+  "description": "Applique une expression Python à chaque élément. La variable `item` est l'élément, `i` son index.",
+  "version": "0.1.0",
+  "color": "#06b6d4",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [{ "name": "list", "label": "Liste", "type": "any" }],
+  "outputs": [{ "name": "list", "label": "Liste transformée", "type": "any" }],
+  "params": [
+    {
+      "name": "expression",
+      "label": "Expression (item, i)",
+      "type": "text",
+      "default": "item"
+    }
+  ]
+}

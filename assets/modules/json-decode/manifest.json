@@ -1,0 +1,11 @@
+{
+  "id": "json-decode",
+  "name": "Décoder JSON",
+  "description": "Parse une chaîne JSON en objet (dict/list).",
+  "version": "0.1.0",
+  "color": "#ef4444",
+  "entry": "module.py",
+  "inputs": [{ "name": "text", "label": "JSON", "type": "string" }],
+  "outputs": [{ "name": "value", "label": "Objet", "type": "any" }],
+  "params": []
+}

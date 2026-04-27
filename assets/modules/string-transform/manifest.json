@@ -1,0 +1,19 @@
+{
+  "id": "string-transform",
+  "name": "Transformer texte",
+  "description": "Applique une opération de base sur la chaîne d'entrée.",
+  "version": "0.1.0",
+  "color": "#f43f5e",
+  "entry": "module.py",
+  "inputs": [{ "name": "text", "label": "Texte", "type": "string" }],
+  "outputs": [{ "name": "text", "label": "Texte", "type": "string" }],
+  "params": [
+    {
+      "name": "op",
+      "label": "Opération",
+      "type": "select",
+      "options": ["lower", "upper", "title", "trim", "reverse", "swapcase", "capitalize"],
+      "default": "lower"
+    }
+  ]
+}

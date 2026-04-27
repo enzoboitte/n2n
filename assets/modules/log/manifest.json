@@ -1,0 +1,13 @@
+{
+  "id": "log",
+  "name": "Log (debug)",
+  "description": "Affiche la valeur d'entrée dans la console et la relaie en sortie sans modification.",
+  "version": "0.1.0",
+  "color": "#6b7280",
+  "entry": "module.py",
+  "inputs": [{ "name": "value", "label": "Valeur", "type": "any" }],
+  "outputs": [{ "name": "value", "label": "Valeur", "type": "any" }],
+  "params": [
+    { "name": "label", "label": "Étiquette (préfixe)", "type": "string", "default": "log" }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "id": "range",
+  "name": "Range",
+  "description": "Génère une liste d'entiers de start à end (exclus) avec un pas.",
+  "version": "0.1.0",
+  "color": "#06b6d4",
+  "entry": "module.py",
+  "inputs": [],
+  "outputs": [{ "name": "list", "label": "Liste", "type": "any" }],
+  "params": [
+    { "name": "start", "label": "Début", "type": "string", "default": "0" },
+    { "name": "end", "label": "Fin (exclus)", "type": "string", "default": "10" },
+    { "name": "step", "label": "Pas", "type": "string", "default": "1" }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "json-encode",
+  "name": "Encoder JSON",
+  "description": "Sérialise un objet en chaîne JSON.",
+  "version": "0.1.0",
+  "color": "#ef4444",
+  "entry": "module.py",
+  "inputs": [{ "name": "value", "label": "Objet", "type": "any" }],
+  "outputs": [{ "name": "text", "label": "JSON", "type": "string" }],
+  "params": [
+    {
+      "name": "indent",
+      "label": "Indentation (0 = compact)",
+      "type": "string",
+      "default": "2"
+    }
+  ]
+}

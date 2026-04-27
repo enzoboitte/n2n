@@ -1,0 +1,13 @@
+{
+  "id": "picker",
+  "name": "Sélecteur",
+  "description": "Récupère la valeur d'une lettre — depuis un dict en entrée ou directement depuis les arêtes entrantes.",
+  "version": "0.2.0",
+  "color": "#fbbf24",
+  "entry": "module.py",
+  "inputs": [{ "name": "value", "label": "Valeur ou dict", "type": "any" }],
+  "outputs": [{ "name": "value", "label": "Valeur", "type": "any" }],
+  "params": [
+    { "name": "letter", "label": "Lettre", "type": "string", "default": "a" }
+  ]
+}

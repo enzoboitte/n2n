@@ -1,0 +1,30 @@
+{
+  "id": "timestamp",
+  "name": "Horodatage",
+  "description": "Renvoie la date/heure courante au format demandé.",
+  "version": "0.1.0",
+  "color": "#f97316",
+  "entry": "module.py",
+  "inputs": [],
+  "outputs": [
+    { "name": "iso", "label": "ISO 8601", "type": "string" },
+    { "name": "epoch", "label": "Epoch (s)", "type": "number" },
+    { "name": "epoch_ms", "label": "Epoch (ms)", "type": "number" },
+    { "name": "formatted", "label": "Format custom", "type": "string" }
+  ],
+  "params": [
+    {
+      "name": "format",
+      "label": "Format strftime",
+      "type": "string",
+      "default": "%Y-%m-%d %H:%M:%S"
+    },
+    {
+      "name": "tz",
+      "label": "Fuseau",
+      "type": "select",
+      "options": ["local", "utc"],
+      "default": "local"
+    }
+  ]
+}

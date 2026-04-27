@@ -1,0 +1,13 @@
+{
+  "id": "join",
+  "name": "Join",
+  "description": "Joint une liste en chaîne avec un séparateur.",
+  "version": "0.1.0",
+  "color": "#06b6d4",
+  "entry": "module.py",
+  "inputs": [{ "name": "list", "label": "Liste", "type": "any" }],
+  "outputs": [{ "name": "text", "label": "Texte", "type": "string" }],
+  "params": [
+    { "name": "separator", "label": "Séparateur", "type": "string", "default": ", " }
+  ]
+}

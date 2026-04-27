@@ -1,0 +1,14 @@
+{
+  "id": "env-watch",
+  "name": "Observer env",
+  "description": "Émet la valeur d'une variable d'environnement. Les nœuds en aval sont re-déclenchés automatiquement à chaque changement de la variable observée.",
+  "version": "0.1.0",
+  "color": "#0ea5e9",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [],
+  "outputs": [{ "name": "value", "label": "Valeur", "type": "any" }],
+  "params": [
+    { "name": "var", "label": "Variable observée", "type": "env-key", "default": "" }
+  ]
+}

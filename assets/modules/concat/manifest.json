@@ -1,0 +1,13 @@
+{
+  "id": "concat",
+  "name": "Concaténer",
+  "description": "Concatène toutes les valeurs entrantes (par ordre de lettre) avec un séparateur optionnel.",
+  "version": "0.1.0",
+  "color": "#f43f5e",
+  "entry": "module.py",
+  "inputs": [{ "name": "value", "label": "Valeurs", "type": "any" }],
+  "outputs": [{ "name": "value", "label": "Texte", "type": "string" }],
+  "params": [
+    { "name": "separator", "label": "Séparateur", "type": "string", "default": "" }
+  ]
+}

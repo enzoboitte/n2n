@@ -1,0 +1,22 @@
+{
+  "id": "cron-tick",
+  "name": "Cron",
+  "description": "Émet un tick à intervalle régulier (auto-déclenche le sous-graphe en aval). Géré par le runtime.",
+  "version": "0.1.0",
+  "color": "#0ea5e9",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [],
+  "outputs": [
+    { "name": "epoch_ms", "label": "Timestamp (ms)", "type": "number" },
+    { "name": "iso", "label": "ISO 8601", "type": "string" }
+  ],
+  "params": [
+    {
+      "name": "interval",
+      "label": "Intervalle (ex: 30s, 5m, 1h)",
+      "type": "string",
+      "default": "1m"
+    }
+  ]
+}

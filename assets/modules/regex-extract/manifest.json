@@ -1,0 +1,24 @@
+{
+  "id": "regex-extract",
+  "name": "Regex extraire",
+  "description": "Extrait les correspondances d'une regex dans le texte d'entrée.",
+  "version": "0.1.0",
+  "color": "#f43f5e",
+  "entry": "module.py",
+  "inputs": [{ "name": "text", "label": "Texte", "type": "string" }],
+  "outputs": [
+    { "name": "first", "label": "Première correspondance", "type": "string" },
+    { "name": "all", "label": "Toutes (liste)", "type": "any" },
+    { "name": "groups", "label": "Groupes (1ʳᵉ)", "type": "any" }
+  ],
+  "params": [
+    { "name": "pattern", "label": "Regex Python", "type": "string", "default": "" },
+    {
+      "name": "flags",
+      "label": "Flags",
+      "type": "select",
+      "options": ["", "i", "s", "is", "m", "im"],
+      "default": ""
+    }
+  ]
+}

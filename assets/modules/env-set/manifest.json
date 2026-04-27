@@ -1,0 +1,14 @@
+{
+  "id": "env-set",
+  "name": "Écrire env",
+  "description": "Écrit la valeur d'entrée dans une variable d'environnement (via la convention __env__).",
+  "version": "0.2.0",
+  "color": "#0ea5e9",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [{ "name": "value", "label": "Valeur", "type": "any" }],
+  "outputs": [{ "name": "value", "label": "Valeur", "type": "any" }],
+  "params": [
+    { "name": "var", "label": "Variable cible", "type": "env-key", "default": "" }
+  ]
+}
