@@ -28,53 +28,8 @@ import { useProjects } from "@/hooks/useProjects";
 import { autoLayout } from "@/lib/layout";
 import { indexToLetter } from "@/lib/letters";
 import { getApi } from "@/lib/n2n";
-import { substituteDeep } from "@/lib/template";
 import { SYSTEM_PROMPT, TOOLS } from "@/lib/tools";
 import type { CanvasNode, Edge, ModuleManifest, RunResult } from "@/lib/types";
-
-function stringifyValue(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
-}
-
-// Convert templated string values back to the primitive types declared in
-// the MCP tool's JSON Schema (numbers, booleans, parsed JSON for arrays/objects).
-// Strings stay strings. Anything that fails coercion is kept as-is.
-function coerceMcpArgs(
-  args: Record<string, unknown>,
-  schema: unknown,
-): Record<string, unknown> {
-  const properties =
-    (schema as { properties?: Record<string, { type?: string }> })
-      ?.properties ?? {};
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(args)) {
-    const propType = properties[k]?.type;
-    if (typeof v !== "string" || !propType) {
-      out[k] = v;
-      continue;
-    }
-    const trimmed = v.trim();
-    if (trimmed === "") continue;
-    if (propType === "number" || propType === "integer") {
-      const n = Number(trimmed);
-      out[k] = Number.isFinite(n) ? n : v;
-    } else if (propType === "boolean") {
-      const lower = trimmed.toLowerCase();
-      out[k] = lower === "true" || lower === "1" || lower === "yes";
-    } else if (propType === "array" || propType === "object") {
-      try {
-        out[k] = JSON.parse(trimmed);
-      } catch {
-        out[k] = v;
-      }
-    } else {
-      out[k] = v;
-    }
-  }
-  return out;
-}
 
 function parseHumanInterval(s: string): number {
   const m = String(s || "").match(/^\s*(\d+)\s*(ms|s|m|h|d)?\s*$/i);
@@ -82,30 +37,9 @@ function parseHumanInterval(s: string): number {
   const n = parseInt(m[1], 10);
   const unit = (m[2] || "s").toLowerCase();
   const mult: Record<string, number> = {
-    ms: 1,
-    s: 1000,
-    m: 60_000,
-    h: 3_600_000,
-    d: 86_400_000,
+    ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000,
   };
   return n * (mult[unit] ?? 1000);
-}
-
-function downstreamLeaves(startId: string, edges: Edge[]): string[] {
-  const reachable = new Set<string>([startId]);
-  const queue: string[] = [startId];
-  while (queue.length) {
-    const cur = queue.shift()!;
-    for (const e of edges) {
-      if (e.source === cur && !reachable.has(e.target)) {
-        reachable.add(e.target);
-        queue.push(e.target);
-      }
-    }
-  }
-  return Array.from(reachable).filter(
-    (id) => !edges.some((e) => e.source === id && reachable.has(e.target)),
-  );
 }
 
 type ContextState =
@@ -290,401 +224,22 @@ export default function Home() {
     });
   }, []);
 
-  // Webhook payloads keyed by nodeId — populated by the IPC listener below
-  // and consumed by the runtime when a webhook node is run.
-  const webhookDataRef = useRef<Map<string, Record<string, unknown>>>(
-    new Map(),
-  );
-
+  // Run a node via the server (server handles full orchestration).
   const runNode = useCallback(
     async (id: string): Promise<RunResult | undefined> => {
+      if (!activeProjectId) return;
       const api = getApi();
       if (!api) return;
-
-      const cache = new Map<string, Promise<RunResult>>();
-
-      const exec = (nodeId: string): Promise<RunResult> => {
-        const cached = cache.get(nodeId);
-        if (cached) return cached;
-
-        const promise = (async (): Promise<RunResult> => {
-          const node = nodesRef.current.find((n) => n.id === nodeId);
-          if (!node) return { ok: false, error: "Nœud introuvable" };
-
-          // Pinned data short-circuits everything: the runtime returns the
-          // user-frozen outputs without running predecessors or the module.
-          if (node.pinned && typeof node.pinned === "object") {
-            const r: RunResult = {
-              ok: true,
-              outputs: node.pinned as Record<string, unknown>,
-            };
-            setResult(nodeId, r);
-            return r;
-          }
-
-          const incoming = edgesRef.current.filter(
-            (e) => e.target === nodeId,
-          );
-          const manifest = modulesById.get(node.moduleId);
-
-          const upstreams = await Promise.all(
-            incoming.map((e) => exec(e.source)),
-          );
-
-          const inputs: Record<string, unknown> = {};
-          const letters: Record<string, unknown> = {};
-          let receivedSignal = incoming.length === 0;
-
-          for (let i = 0; i < incoming.length; i++) {
-            const edge = incoming[i];
-            const upstream = upstreams[i];
-
-            if ("skipped" in upstream) continue;
-            if (!upstream.ok) {
-              const r: RunResult = {
-                ok: false,
-                error: `amont: ${upstream.error}`,
-              };
-              setResult(nodeId, r);
-              return r;
-            }
-
-            const value = upstream.outputs[edge.sourceSocket];
-            if (value === null || value === undefined) continue;
-
-            const namedSlot = manifest?.inputs[i] ?? manifest?.inputs[0];
-            if (namedSlot) inputs[namedSlot.name] = value;
-            letters[indexToLetter(i)] = value;
-            receivedSignal = true;
-          }
-
-          if (!receivedSignal) {
-            const r: RunResult = { skipped: true };
-            setResult(nodeId, r);
-            return r;
-          }
-
-          markRunning(nodeId, true);
-          const startedAt = Date.now();
-          try {
-            const currentEnv = envRef.current;
-            const vars = { ...currentEnv, ...letters };
-            const substituted = substituteDeep(node.params, vars) as Record<
-              string,
-              unknown
-            >;
-
-            // Modules handled directly by the runtime (no Python).
-            let result: RunResult;
-            if (node.moduleId === "cron-tick") {
-              const ms = Date.now();
-              result = {
-                ok: true,
-                outputs: { epoch_ms: ms, iso: new Date(ms).toISOString() },
-              };
-            } else if (node.moduleId === "webhook-receive") {
-              const data = webhookDataRef.current.get(nodeId);
-              if (!data) {
-                result = { skipped: true };
-              } else {
-                let parsed: unknown = null;
-                try {
-                  parsed =
-                    typeof data.body === "string" && data.body
-                      ? JSON.parse(data.body as string)
-                      : null;
-                } catch {
-                  parsed = null;
-                }
-                result = {
-                  ok: true,
-                  outputs: {
-                    method: data.method,
-                    body: data.body,
-                    json: parsed,
-                    query: data.query,
-                    headers: data.headers,
-                  },
-                };
-              }
-            } else if (node.moduleId === "subworkflow") {
-              result = await runChildProject(
-                String(substituted.project_id || ""),
-                inputs.value ?? letters.a ?? null,
-                false,
-              );
-            } else if (node.moduleId === "mcp-tool") {
-              const target = String(substituted.target || "").trim();
-              const sep = target.indexOf("::");
-              const server = sep >= 0 ? target.slice(0, sep) : "";
-              const toolName = sep >= 0 ? target.slice(sep + 2) : "";
-              const argsParam = substituted.arguments;
-              let toolArgs: Record<string, unknown> = {};
-              // The form-driven editor stores a dict (preferred). Fall back
-              // to a raw JSON string for backward compat with v0.2.0 nodes.
-              if (
-                argsParam &&
-                typeof argsParam === "object" &&
-                !Array.isArray(argsParam)
-              ) {
-                toolArgs = argsParam as Record<string, unknown>;
-              } else if (typeof argsParam === "string" && argsParam.trim()) {
-                try {
-                  const parsed = JSON.parse(argsParam);
-                  if (
-                    parsed &&
-                    typeof parsed === "object" &&
-                    !Array.isArray(parsed)
-                  ) {
-                    toolArgs = parsed as Record<string, unknown>;
-                  }
-                } catch {
-                  // ignore
-                }
-              } else if (
-                inputs.args &&
-                typeof inputs.args === "object" &&
-                !Array.isArray(inputs.args)
-              ) {
-                toolArgs = inputs.args as Record<string, unknown>;
-              }
-              // Coerce string values to the schema's expected primitive type
-              // so MCP servers receive proper numbers/booleans/objects rather
-              // than the templated strings produced by `{a}` substitution.
-              if (server && toolName) {
-                const srv = mcp.servers.find((s) => s.name === server);
-                const tdef = srv?.tools.find((t) => t.name === toolName);
-                if (tdef) {
-                  toolArgs = coerceMcpArgs(toolArgs, tdef.inputSchema);
-                }
-              }
-              if (!server || !toolName) {
-                result = {
-                  ok: false,
-                  error: "mcp-tool: server et tool requis",
-                };
-              } else {
-                try {
-                  const callResult = await api.mcpCallTool(
-                    server,
-                    toolName,
-                    toolArgs,
-                  );
-                  const content = callResult.content ?? [];
-                  const textParts = Array.isArray(content)
-                    ? content
-                        .filter((c) => c?.type === "text" && typeof c?.text === "string")
-                        .map((c) => c.text as string)
-                    : [];
-                  result = {
-                    ok: true,
-                    outputs: {
-                      content,
-                      text: textParts.join("\n"),
-                      isError: !!callResult.isError,
-                    },
-                  };
-                } catch (err) {
-                  result = {
-                    ok: false,
-                    error: `mcp: ${(err as Error).message}`,
-                  };
-                }
-              }
-            } else if (node.moduleId === "for-each") {
-              const list = (inputs.list ?? letters.a) as unknown;
-              if (!Array.isArray(list)) {
-                result = {
-                  ok: false,
-                  error: "for-each: l'entrée n'est pas une liste",
-                };
-              } else {
-                const childId = String(substituted.project_id || "");
-                const results: unknown[] = [];
-                for (const item of list) {
-                  const childResult = await runChildProject(
-                    childId,
-                    item,
-                    false,
-                  );
-                  if ("ok" in childResult && childResult.ok) {
-                    const outs = childResult.outputs as Record<string, unknown>;
-                    const firstKey = Object.keys(outs)[0];
-                    results.push(
-                      firstKey !== undefined ? outs[firstKey] : null,
-                    );
-                  } else {
-                    results.push(null);
-                  }
-                }
-                result = { ok: true, outputs: { results } };
-              }
-            } else {
-              result = await api.runModule(
-                node.moduleId,
-                inputs,
-                substituted,
-                letters,
-                currentEnv,
-              );
-            }
-
-            let cleaned = result;
-            if ("ok" in result && result.ok) {
-              const outs = result.outputs as Record<string, unknown>;
-              const writes = outs.__env__;
-              if (
-                writes &&
-                typeof writes === "object" &&
-                !Array.isArray(writes)
-              ) {
-                const stringWrites: Record<string, string> = {};
-                for (const [k, v] of Object.entries(
-                  writes as Record<string, unknown>,
-                )) {
-                  stringWrites[k] = stringifyValue(v);
-                }
-                setEnv({ ...envRef.current, ...stringWrites });
-                const { __env__: _drop, ...rest } = outs;
-                cleaned = { ok: true, outputs: rest };
-              }
-            }
-
-            setResult(nodeId, cleaned);
-
-            // Append to execution history (fire-and-forget, no UI blocking).
-            const durationMs = Date.now() - startedAt;
-            const ok = "ok" in cleaned ? cleaned.ok : false;
-            api
-              .appendHistory({
-                timestamp: startedAt,
-                projectId: activeProjectId,
-                nodeId,
-                moduleId: node.moduleId,
-                durationMs,
-                ok,
-                error:
-                  "ok" in cleaned && !cleaned.ok ? cleaned.error : undefined,
-                outputs:
-                  "ok" in cleaned && cleaned.ok
-                    ? (cleaned.outputs as Record<string, unknown>)
-                    : undefined,
-              })
-              .catch(() => undefined);
-
-            return cleaned;
-          } finally {
-            markRunning(nodeId, false);
-          }
-        })();
-
-        cache.set(nodeId, promise);
-        return promise;
-      };
-
-      // ----- helper for sub-workflow execution -----
-      // Runs a project's graph in isolation. Sets `__input__` env var to the
-      // provided input value. Returns the result of the project's last leaf.
-      async function runChildProject(
-        projectId: string,
-        inputValue: unknown,
-        _isolated: boolean,
-      ): Promise<RunResult> {
-        if (!projectId) {
-          return { ok: false, error: "subworkflow: project_id manquant" };
-        }
-        let child;
-        try {
-          child = await api!.loadProject(projectId);
-        } catch (err) {
-          return {
-            ok: false,
-            error: `subworkflow: ${(err as Error).message}`,
-          };
-        }
-        const childCache = new Map<string, Promise<RunResult>>();
-        const childEnv = {
-          ...envRef.current,
-          __input__: stringifyValue(inputValue),
-        };
-
-        const childExec = (childNodeId: string): Promise<RunResult> => {
-          const c = childCache.get(childNodeId);
-          if (c) return c;
-          const p = (async (): Promise<RunResult> => {
-            const cn = child.nodes.find((n) => n.id === childNodeId);
-            if (!cn) return { ok: false, error: "Nœud enfant introuvable" };
-            if (cn.pinned && typeof cn.pinned === "object") {
-              return {
-                ok: true,
-                outputs: cn.pinned as Record<string, unknown>,
-              };
-            }
-            const cIn = child.edges.filter((e) => e.target === childNodeId);
-            const cManifest = modulesById.get(cn.moduleId);
-            const cUps = await Promise.all(cIn.map((e) => childExec(e.source)));
-            const cInputs: Record<string, unknown> = {};
-            const cLetters: Record<string, unknown> = {};
-            let signal = cIn.length === 0;
-            for (let i = 0; i < cIn.length; i++) {
-              const edge = cIn[i];
-              const up = cUps[i];
-              if ("skipped" in up) continue;
-              if (!up.ok) return { ok: false, error: `amont: ${up.error}` };
-              const v = up.outputs[edge.sourceSocket];
-              if (v === null || v === undefined) continue;
-              const slot = cManifest?.inputs[i] ?? cManifest?.inputs[0];
-              if (slot) cInputs[slot.name] = v;
-              cLetters[indexToLetter(i)] = v;
-              signal = true;
-            }
-            if (!signal) return { skipped: true };
-            const cVars = { ...childEnv, ...cLetters };
-            const cSubst = substituteDeep(cn.params, cVars) as Record<
-              string,
-              unknown
-            >;
-            // Special modules inside subworkflows: only honour those that
-            // don't recurse for now (avoid sub-sub-workflows for simplicity).
-            if (cn.moduleId === "cron-tick") {
-              const ms = Date.now();
-              return {
-                ok: true,
-                outputs: { epoch_ms: ms, iso: new Date(ms).toISOString() },
-              };
-            }
-            return api!.runModule(
-              cn.moduleId,
-              cInputs,
-              cSubst,
-              cLetters,
-              childEnv,
-            );
-          })();
-          childCache.set(childNodeId, p);
-          return p;
-        };
-
-        const leaves = child.nodes.filter(
-          (n) => !child.edges.some((e) => e.source === n.id),
-        );
-        if (leaves.length === 0) {
-          return { ok: false, error: "subworkflow: aucune feuille" };
-        }
-        return childExec(leaves[leaves.length - 1].id);
+      markRunning(id, true);
+      try {
+        return await api.runProjectNode(activeProjectId, id);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      } finally {
+        markRunning(id, false);
       }
-
-      return exec(id);
     },
-    [
-      modulesById,
-      envRef,
-      markRunning,
-      setEnv,
-      setResult,
-      activeProjectId,
-      mcp.servers,
-    ],
+    [activeProjectId, markRunning],
   );
 
   const runNodeRef = useRef(runNode);
@@ -692,18 +247,33 @@ export default function Home() {
     runNodeRef.current = runNode;
   }, [runNode]);
 
-  // Cron + webhook registration: when nodes change, sync the registry
-  // in the main process. Each cron-tick node gets its own scheduler;
-  // each webhook-receive node gets its own /webhook/<path> route.
+  // Reflect server-side node execution state in the UI via SSE events.
   useEffect(() => {
     const api = getApi();
     if (!api) return;
+    const offRunning = api.onNodeRunning(({ nodeId }) => markRunning(nodeId, true));
+    const offResult = api.onNodeResult(({ nodeId, result }) => {
+      markRunning(nodeId, false);
+      setResult(nodeId, result);
+    });
+    const offEnv = api.onEnvChanged(() => {
+      // Reload env from server so the UI stays in sync after env-set runs.
+      api.loadEnv().then((e) => setEnv(e)).catch(() => {});
+    });
+    return () => { offRunning(); offResult(); offEnv(); };
+  }, [markRunning, setResult, setEnv]);
+
+  // Cron + webhook registration: sync the registry when nodes or active project change.
+  // Now passes activeProjectId so the server knows which project to run on trigger.
+  useEffect(() => {
+    const api = getApi();
+    if (!api || !activeProjectId) return;
     const cronNodes = nodes.filter((n) => n.moduleId === "cron-tick");
     const webhookNodes = nodes.filter((n) => n.moduleId === "webhook-receive");
 
     for (const n of cronNodes) {
       const intervalMs = parseHumanInterval(String(n.params.interval ?? ""));
-      if (intervalMs > 0) api.cronRegister(n.id, intervalMs);
+      if (intervalMs > 0) api.cronRegister(n.id, intervalMs, activeProjectId);
     }
     for (const n of webhookNodes) {
       const p = String(n.params.path ?? "").trim();
@@ -720,69 +290,17 @@ export default function Home() {
           : {};
       api.webhookRegister(n.id, p, {
         status: String(n.params.response_status ?? "200"),
-        contentType: String(
-          n.params.response_content_type ?? "application/json",
-        ),
+        contentType: String(n.params.response_content_type ?? "application/json"),
         body: String(n.params.response_body ?? '{"ok":true}'),
         headers,
-      });
+      }, activeProjectId);
     }
 
     return () => {
       for (const n of cronNodes) api.cronUnregister(n.id);
       for (const n of webhookNodes) api.webhookUnregister(n.id);
     };
-  }, [nodes]);
-
-  // Subscribe to cron and webhook events: on fire, run downstream leaves
-  // exactly like env-watch does.
-  useEffect(() => {
-    const api = getApi();
-    if (!api) return;
-    const offCron = api.onCronTick(({ id }) => {
-      runNodeRef.current(id);
-      const leaves = downstreamLeaves(id, edgesRef.current);
-      for (const leafId of leaves) runNodeRef.current(leafId);
-    });
-    const offWebhook = api.onWebhookFired(({ nodeId, data }) => {
-      webhookDataRef.current.set(nodeId, data);
-      runNodeRef.current(nodeId);
-      const leaves = downstreamLeaves(nodeId, edgesRef.current);
-      for (const leafId of leaves) runNodeRef.current(leafId);
-    });
-    return () => {
-      offCron();
-      offWebhook();
-    };
-  }, []);
-
-  const prevEnvRef = useRef<Record<string, string> | null>(null);
-  useEffect(() => {
-    if (prevEnvRef.current === null) {
-      prevEnvRef.current = env;
-      return;
-    }
-    const prev = prevEnvRef.current;
-    const changed = new Set<string>();
-    for (const k of new Set([...Object.keys(prev), ...Object.keys(env)])) {
-      if (prev[k] !== env[k]) changed.add(k);
-    }
-    prevEnvRef.current = env;
-    if (changed.size === 0) return;
-
-    const triggered = new Set<string>();
-    for (const node of nodesRef.current) {
-      if (node.moduleId !== "env-watch") continue;
-      const watched = String(node.params.var ?? "");
-      if (!watched || !changed.has(watched)) continue;
-      const leaves = downstreamLeaves(node.id, edgesRef.current);
-      for (const leafId of leaves) {
-        if (triggered.has(leafId)) continue;
-        triggered.add(leafId);
-        runNodeRef.current(leafId);
-      }
-    }
-  }, [env]);
+  }, [nodes, activeProjectId]);
 
   const openFolder = useCallback(() => {
     const api = getApi();
