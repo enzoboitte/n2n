@@ -8,6 +8,6 @@
   "inputs": [{ "name": "value", "label": "Valeur ou dict", "type": "any" }],
   "outputs": [{ "name": "value", "label": "Valeur", "type": "any" }],
   "params": [
-    { "name": "letter", "label": "Lettre", "type": "string", "default": "a" }
+    { "name": "letter", "label": "Lettre", "type": "letter", "default": "a" }
   ]
 }

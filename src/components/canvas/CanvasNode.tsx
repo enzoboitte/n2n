@@ -15,6 +15,8 @@ const INLINE_TYPES: ParamSpec["type"][] = [
   "select",
   "boolean",
   "env-key",
+  "project-id",
+  "letter",
   "mcp-target",
 ];
 
@@ -26,6 +28,8 @@ type Props = {
   scale: number;
   isSpaceDown: boolean;
   running: boolean;
+  /** Letters (a, b, c…) currently bound to incoming edges of this node. */
+  availableLetters: string[];
   onSelect: (id: string | null, additive?: boolean) => void;
   onMove: (ids: string[], dx: number, dy: number) => void;
   onStartConnect: (id: string, sourceSocket: string, e: React.MouseEvent) => void;
@@ -43,6 +47,7 @@ export function CanvasNode({
   scale,
   isSpaceDown,
   running,
+  availableLetters,
   onSelect,
   onMove,
   onStartConnect,
@@ -238,6 +243,7 @@ export function CanvasNode({
                 onChange={(v) => onSetParam(node.id, p.name, v)}
                 compact
                 allParams={node.params}
+                availableLetters={availableLetters}
               />
             </div>
           ))}

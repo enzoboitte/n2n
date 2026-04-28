@@ -19,6 +19,8 @@ export type ParamType =
   | "list"
   | "code"
   | "env-key"
+  | "project-id"
+  | "letter"
   | "mcp-target"
   | "mcp-arguments";
 

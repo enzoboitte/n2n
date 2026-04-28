@@ -11,8 +11,8 @@
   "params": [
     {
       "name": "project_id",
-      "label": "ID du projet enfant",
-      "type": "string",
+      "label": "Projet enfant",
+      "type": "project-id",
       "default": ""
     }
   ]

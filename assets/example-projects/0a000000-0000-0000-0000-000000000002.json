@@ -1,0 +1,88 @@
+{
+  "id": "0a000000-0000-0000-0000-000000000002",
+  "name": "text-stats (sub)",
+  "createdAt": 1714200000000,
+  "updatedAt": 1714200000000,
+  "nodes": [
+    {
+      "id": "n1",
+      "moduleId": "env-watch",
+      "x": 100,
+      "y": 260,
+      "width": 200,
+      "height": 110,
+      "params": { "var": "__input__" },
+      "result": null
+    },
+    {
+      "id": "n2",
+      "moduleId": "length",
+      "x": 400,
+      "y": 80,
+      "width": 200,
+      "height": 110,
+      "params": {},
+      "result": null
+    },
+    {
+      "id": "n3",
+      "moduleId": "split",
+      "x": 400,
+      "y": 260,
+      "width": 200,
+      "height": 110,
+      "params": { "separator": " ", "trim": true },
+      "result": null
+    },
+    {
+      "id": "n4",
+      "moduleId": "length",
+      "x": 700,
+      "y": 260,
+      "width": 200,
+      "height": 110,
+      "params": {},
+      "result": null
+    },
+    {
+      "id": "n5",
+      "moduleId": "list-map",
+      "x": 700,
+      "y": 440,
+      "width": 200,
+      "height": 110,
+      "params": { "expression": "len(item)" },
+      "result": null
+    },
+    {
+      "id": "n6",
+      "moduleId": "math",
+      "x": 1000,
+      "y": 440,
+      "width": 200,
+      "height": 110,
+      "params": { "expression": "max(a) if a else 0" },
+      "result": null
+    },
+    {
+      "id": "n7",
+      "moduleId": "merge",
+      "x": 1300,
+      "y": 260,
+      "width": 200,
+      "height": 110,
+      "params": {},
+      "result": null
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "n1", "sourceSocket": "value", "target": "n2" },
+    { "id": "e2", "source": "n1", "sourceSocket": "value", "target": "n3" },
+    { "id": "e3", "source": "n3", "sourceSocket": "list", "target": "n4" },
+    { "id": "e4", "source": "n3", "sourceSocket": "list", "target": "n5" },
+    { "id": "e5", "source": "n5", "sourceSocket": "list", "target": "n6" },
+    { "id": "e6", "source": "n2", "sourceSocket": "length", "target": "n7" },
+    { "id": "e7", "source": "n4", "sourceSocket": "length", "target": "n7" },
+    { "id": "e8", "source": "n6", "sourceSocket": "value", "target": "n7" }
+  ]
+}

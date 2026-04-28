@@ -1,0 +1,110 @@
+{
+  "id": "0a000000-0000-0000-0000-000000000003",
+  "name": "pipeline-demo (main)",
+  "createdAt": 1714200000000,
+  "updatedAt": 1714200000000,
+  "nodes": [
+    {
+      "id": "n1",
+      "moduleId": "text",
+      "x": 100,
+      "y": 100,
+      "width": 200,
+      "height": 110,
+      "params": { "value": "Paris,Lyon,Marseille,Bordeaux,Toulouse" },
+      "result": null
+    },
+    {
+      "id": "n2",
+      "moduleId": "split",
+      "x": 400,
+      "y": 100,
+      "width": 200,
+      "height": 110,
+      "params": { "separator": ",", "trim": true },
+      "result": null
+    },
+    {
+      "id": "n3",
+      "moduleId": "for-each",
+      "x": 700,
+      "y": 100,
+      "width": 200,
+      "height": 110,
+      "params": { "project_id": "0a000000-0000-0000-0000-000000000001" },
+      "result": null
+    },
+    {
+      "id": "n4",
+      "moduleId": "text",
+      "x": 100,
+      "y": 340,
+      "width": 200,
+      "height": 110,
+      "params": {
+        "value": "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat."
+      },
+      "result": null
+    },
+    {
+      "id": "n5",
+      "moduleId": "subworkflow",
+      "x": 400,
+      "y": 340,
+      "width": 200,
+      "height": 110,
+      "params": { "project_id": "0a000000-0000-0000-0000-000000000002" },
+      "result": null
+    },
+    {
+      "id": "n6",
+      "moduleId": "timestamp",
+      "x": 400,
+      "y": 560,
+      "width": 200,
+      "height": 110,
+      "params": { "format": "%Y-%m-%d %H:%M:%S", "tz": "local" },
+      "result": null
+    },
+    {
+      "id": "n7",
+      "moduleId": "merge",
+      "x": 1000,
+      "y": 340,
+      "width": 200,
+      "height": 110,
+      "params": {},
+      "result": null
+    },
+    {
+      "id": "n8",
+      "moduleId": "json-encode",
+      "x": 1300,
+      "y": 340,
+      "width": 200,
+      "height": 110,
+      "params": { "indent": "2" },
+      "result": null
+    },
+    {
+      "id": "n9",
+      "moduleId": "log",
+      "x": 1600,
+      "y": 340,
+      "width": 200,
+      "height": 110,
+      "params": { "label": "pipeline-demo" },
+      "result": null
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "n1", "sourceSocket": "text", "target": "n2" },
+    { "id": "e2", "source": "n2", "sourceSocket": "list", "target": "n3" },
+    { "id": "e3", "source": "n4", "sourceSocket": "text", "target": "n5" },
+    { "id": "e4", "source": "n3", "sourceSocket": "results", "target": "n7" },
+    { "id": "e5", "source": "n5", "sourceSocket": "value", "target": "n7" },
+    { "id": "e6", "source": "n6", "sourceSocket": "iso", "target": "n7" },
+    { "id": "e7", "source": "n7", "sourceSocket": "value", "target": "n8" },
+    { "id": "e8", "source": "n8", "sourceSocket": "text", "target": "n9" }
+  ]
+}

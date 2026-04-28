@@ -2,6 +2,7 @@
 
 import { useEnvVars } from "@/contexts/EnvContext";
 import { useMcpServersList } from "@/contexts/McpContext";
+import { useProjectsList } from "@/contexts/ProjectsContext";
 import type { ParamSpec } from "@/lib/types";
 
 type Props = {
@@ -12,6 +13,9 @@ type Props = {
   /** Sibling params on the same node — needed by widgets that adapt to
    *  another param's value (e.g. mcp-arguments reads the selected target). */
   allParams?: Record<string, unknown>;
+  /** Letters available on this node (one per incoming edge, in order).
+   *  Drives the "letter" param type dropdown (e.g. picker). */
+  availableLetters?: string[];
 };
 
 export function ParamField({
@@ -20,6 +24,7 @@ export function ParamField({
   onChange,
   compact = false,
   allParams,
+  availableLetters,
 }: Props) {
   const inputClass = `w-full rounded border border-slate-200 bg-white px-2 ${
     compact ? "py-1 text-xs" : "py-1.5 text-sm"
@@ -75,6 +80,25 @@ export function ParamField({
           value={value}
           onChange={onChange}
           inputClass={inputClass}
+        />
+      );
+
+    case "project-id":
+      return (
+        <ProjectIdField
+          value={value}
+          onChange={onChange}
+          inputClass={inputClass}
+        />
+      );
+
+    case "letter":
+      return (
+        <LetterField
+          value={value}
+          onChange={onChange}
+          inputClass={inputClass}
+          available={availableLetters ?? []}
         />
       );
 
@@ -422,6 +446,82 @@ function McpArgRow({
         />
       )}
     </div>
+  );
+}
+
+function LetterField({
+  value,
+  onChange,
+  inputClass,
+  available,
+}: {
+  value: unknown;
+  onChange: (v: unknown) => void;
+  inputClass: string;
+  available: string[];
+}) {
+  const current = String(value ?? "");
+  return (
+    <>
+      <select
+        value={current}
+        onChange={(e) => onChange(e.target.value)}
+        className={`${inputClass} font-mono`}
+      >
+        {available.length === 0 && <option value="">— aucune arête —</option>}
+        {available.map((l) => (
+          <option key={l} value={l}>
+            {l}
+          </option>
+        ))}
+      </select>
+      {available.length === 0 && (
+        <span className="text-[10px] text-slate-400 dark:text-slate-500">
+          Connectez d&apos;abord une arête en entrée pour voir les lettres.
+        </span>
+      )}
+    </>
+  );
+}
+
+function ProjectIdField({
+  value,
+  onChange,
+  inputClass,
+}: {
+  value: unknown;
+  onChange: (v: unknown) => void;
+  inputClass: string;
+}) {
+  const { projects, activeId } = useProjectsList();
+  const current = String(value ?? "");
+  const others = projects.filter((p) => p.id !== activeId);
+  const known = current && projects.some((p) => p.id === current);
+  return (
+    <>
+      <select
+        value={current}
+        onChange={(e) => onChange(e.target.value)}
+        className={inputClass}
+      >
+        <option value="">— sélectionner un projet —</option>
+        {others.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name}
+          </option>
+        ))}
+      </select>
+      {current && !known && (
+        <span className="text-[10px] text-rose-500">
+          Projet introuvable ({current.slice(0, 8)}…)
+        </span>
+      )}
+      {others.length === 0 && (
+        <span className="text-[10px] text-slate-400 dark:text-slate-500">
+          Aucun autre projet. Créez-en un via le menu projet en haut.
+        </span>
+      )}
+    </>
   );
 }
 

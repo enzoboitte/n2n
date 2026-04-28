@@ -7,6 +7,8 @@ import { ParamField } from "./ParamField";
 type Props = {
   module: ModuleManifest;
   initialParams: Record<string, unknown>;
+  /** Letters bound to incoming edges of the configured node, in order. */
+  availableLetters?: string[];
   onSave: (params: Record<string, unknown>) => void;
   onClose: () => void;
 };
@@ -14,6 +16,7 @@ type Props = {
 export function ConfigModal({
   module,
   initialParams,
+  availableLetters,
   onSave,
   onClose,
 }: Props) {
@@ -84,6 +87,7 @@ export function ConfigModal({
                 value={draft[p.name]}
                 onChange={(v) => update(p.name, v)}
                 allParams={draft}
+                availableLetters={availableLetters}
               />
             </div>
           ))}

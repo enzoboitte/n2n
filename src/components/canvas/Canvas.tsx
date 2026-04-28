@@ -8,6 +8,7 @@ import type {
   ModuleManifest,
   Viewport,
 } from "@/lib/types";
+import { indexToLetter } from "@/lib/letters";
 import { CanvasEdges } from "./CanvasEdges";
 import { CanvasGrid } from "./CanvasGrid";
 import { CanvasNode } from "./CanvasNode";
@@ -149,7 +150,15 @@ export function Canvas({
           transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
         }}
       >
-        {nodes.map((node) => (
+        {nodes.map((node) => {
+          const inboundCount = edges.reduce(
+            (sum, e) => (e.target === node.id ? sum + 1 : sum),
+            0,
+          );
+          const letters = Array.from({ length: inboundCount }, (_, i) =>
+            indexToLetter(i),
+          );
+          return (
           <CanvasNode
             key={node.id}
             node={node}
@@ -159,6 +168,7 @@ export function Canvas({
             scale={viewport.scale}
             isSpaceDown={isSpaceDown}
             running={runningIds.has(node.id)}
+            availableLetters={letters}
             onSelect={onSelect}
             onMove={onMove}
             onStartConnect={onStartConnect}
@@ -167,7 +177,8 @@ export function Canvas({
             onConfigure={onConfigure}
             onContextMenu={onNodeContextMenu}
           />
-        ))}
+          );
+        })}
       </div>
       <CanvasEdges
         nodes={nodes}

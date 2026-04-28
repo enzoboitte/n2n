@@ -14,6 +14,7 @@ import { StatusBar } from "@/components/ui/StatusBar";
 import { Toolbar } from "@/components/ui/Toolbar";
 import { EnvContext } from "@/contexts/EnvContext";
 import { McpContext } from "@/contexts/McpContext";
+import { ProjectsContext } from "@/contexts/ProjectsContext";
 import { useConnect } from "@/hooks/useConnect";
 import { useEdges } from "@/hooks/useEdges";
 import { useEnv } from "@/hooks/useEnv";
@@ -1186,6 +1187,7 @@ export default function Home() {
   return (
     <EnvContext.Provider value={env}>
       <McpContext.Provider value={mcp.servers}>
+      <ProjectsContext.Provider value={{ projects, activeId: activeProjectId }}>
       <div className="flex h-full flex-col">
         <Toolbar
           zoomPercent={Math.round(viewport.scale * 100)}
@@ -1283,6 +1285,10 @@ export default function Home() {
           <ConfigModal
             module={configuringModule}
             initialParams={configuringNode.params}
+            availableLetters={Array.from(
+              { length: edges.filter((e) => e.target === configuringNode.id).length },
+              (_, i) => indexToLetter(i),
+            )}
             onSave={(params) => setParams(configuringNode.id, params)}
             onClose={() => setConfiguringId(null)}
           />
@@ -1314,6 +1320,7 @@ export default function Home() {
           />
         )}
       </div>
+      </ProjectsContext.Provider>
       </McpContext.Provider>
     </EnvContext.Provider>
   );

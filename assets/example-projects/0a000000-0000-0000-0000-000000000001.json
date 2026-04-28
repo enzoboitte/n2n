@@ -1,0 +1,68 @@
+{
+  "id": "0a000000-0000-0000-0000-000000000001",
+  "name": "weather-fetch (sub)",
+  "createdAt": 1714200000000,
+  "updatedAt": 1714200000000,
+  "nodes": [
+    {
+      "id": "n1",
+      "moduleId": "env-watch",
+      "x": 100,
+      "y": 220,
+      "width": 200,
+      "height": 110,
+      "params": { "var": "__input__" },
+      "result": null
+    },
+    {
+      "id": "n2",
+      "moduleId": "http-request",
+      "x": 400,
+      "y": 60,
+      "width": 200,
+      "height": 110,
+      "params": {
+        "method": "GET",
+        "url": "https://wttr.in/{__input__}?format=j1",
+        "query": {},
+        "headers": { "User-Agent": "n2n-example/0.1" },
+        "auth_type": "none",
+        "auth_value": "",
+        "content_type": "",
+        "body": "",
+        "timeout": "20",
+        "follow_redirects": true,
+        "verify_ssl": true,
+        "max_response_bytes": "0"
+      },
+      "result": null
+    },
+    {
+      "id": "n3",
+      "moduleId": "json-decode",
+      "x": 700,
+      "y": 60,
+      "width": 200,
+      "height": 110,
+      "params": {},
+      "result": null
+    },
+    {
+      "id": "n4",
+      "moduleId": "text",
+      "x": 1000,
+      "y": 220,
+      "width": 200,
+      "height": 110,
+      "params": {
+        "value": "{a} → {b.current_condition.0.temp_C}°C (ressenti {b.current_condition.0.FeelsLikeC}°C), {b.current_condition.0.weatherDesc.0.value} — humidité {b.current_condition.0.humidity}%, vent {b.current_condition.0.windspeedKmph} km/h"
+      },
+      "result": null
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "n1", "sourceSocket": "value", "target": "n4" },
+    { "id": "e2", "source": "n2", "sourceSocket": "body", "target": "n3" },
+    { "id": "e3", "source": "n3", "sourceSocket": "value", "target": "n4" }
+  ]
+}
