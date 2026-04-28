@@ -19,15 +19,11 @@ export type ImportResult =
 
 export type ExportResult = { canceled: true } | { canceled: false; path: string };
 
-export type WebhookEvent = {
+export type NodeRunStartEvent = { projectId: string; nodeId: string };
+export type NodeRunEndEvent = {
+  projectId: string;
   nodeId: string;
-  path: string;
-  data: {
-    method: string;
-    body: string;
-    query: Record<string, string>;
-    headers: Record<string, string>;
-  };
+  result: RunResult;
 };
 
 export type McpToolSpec = {
@@ -151,24 +147,26 @@ type N2nApi = {
   setActiveProjectId: (id: string) => Promise<void>;
   exportProjectToFile: (id: string) => Promise<ExportResult>;
   importProjectFromFile: () => Promise<ImportResult>;
-  cronRegister: (id: string, intervalMs: number) => Promise<void>;
-  cronUnregister: (id: string) => Promise<void>;
-  cronUnregisterAll: () => Promise<void>;
-  onCronTick: (callback: (payload: { id: string }) => void) => () => void;
-  webhookRegister: (
-    nodeId: string,
-    path: string,
-    response?: {
-      status?: string | number;
-      contentType?: string;
-      body?: string;
-      headers?: Record<string, string>;
-    },
-  ) => Promise<void>;
-  webhookUnregister: (nodeId: string) => Promise<void>;
-  webhookUnregisterAll: () => Promise<void>;
   webhookPort: () => Promise<number>;
-  onWebhookFired: (callback: (event: WebhookEvent) => void) => () => void;
+  /**
+   * Run a node within a project. The server walks predecessors, executes the
+   * node, then continues to downstream leaves. Returns the result of the
+   * requested node. Live progress is broadcast over `nodeRunStart`/`nodeRunEnd`.
+   */
+  runProjectNode: (projectId: string, nodeId: string) => Promise<RunResult>;
+  onNodeRunStart: (
+    callback: (payload: { projectId: string; nodeId: string }) => void,
+  ) => () => void;
+  onNodeRunEnd: (
+    callback: (payload: {
+      projectId: string;
+      nodeId: string;
+      result: RunResult;
+    }) => void,
+  ) => () => void;
+  onEnvChanged: (
+    callback: (env: Record<string, string>) => void,
+  ) => () => void;
   appendHistory: (entry: HistoryEntry) => Promise<void>;
   readHistory: (limit?: number) => Promise<HistoryEntry[]>;
   clearHistory: () => Promise<void>;
@@ -192,22 +190,164 @@ declare global {
 
 // ---------- HTTP client ----------
 
-// API base resolution order:
-//   1. localStorage["n2n:apiUrl"]            — set by the in-app Settings modal
-//   2. NEXT_PUBLIC_N2N_API at build time     — for dev / pre-baked deployments
-//   3. window.__N2N_API__ injected at runtime (e.g. by an Apache rewrite)
-//   4. http://localhost:9999                 — sane default for local dev
+// Server profiles — the user can save several n2n backends (local desktop,
+// staging VPS, prod, …) and switch between them. The active profile drives
+// every fetch + the SSE event channel. A single legacy `n2n:apiUrl` is
+// migrated into a profile on first read so existing installs keep working.
 //
-// Resolved lazily so that updates to localStorage take effect on the next
-// request without reloading the page.
-const API_STORAGE_KEY = "n2n:apiUrl";
+// Resolution order for the active base URL:
+//   1. active profile in localStorage["n2n:servers" / "n2n:activeServer"]
+//   2. NEXT_PUBLIC_N2N_API at build time
+//   3. window.__N2N_API__ injected at runtime (e.g. by an Apache rewrite)
+//   4. http://localhost:9999
+const PROFILES_KEY = "n2n:servers";
+const ACTIVE_KEY = "n2n:activeServer";
+const LEGACY_URL_KEY = "n2n:apiUrl";
+
+export type ServerProfile = {
+  id: string;
+  label: string;
+  url: string;
+  /** Optional bearer token sent as `Authorization: Bearer <token>`. */
+  token?: string;
+};
+
+function readProfilesRaw(): ServerProfile[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(PROFILES_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter((p) => p && typeof p.url === "string")
+          .map((p) => ({
+            id: String(p.id || `srv-${Math.random().toString(36).slice(2, 8)}`),
+            label: String(p.label || p.url),
+            url: String(p.url).replace(/\/+$/, ""),
+            token: p.token ? String(p.token) : undefined,
+          }));
+      }
+    }
+    // Migrate legacy single-URL setting to a profile.
+    const legacy = window.localStorage.getItem(LEGACY_URL_KEY);
+    if (legacy) {
+      const url = legacy.replace(/\/+$/, "");
+      const seed: ServerProfile[] = [
+        { id: "legacy", label: url, url },
+      ];
+      window.localStorage.setItem(PROFILES_KEY, JSON.stringify(seed));
+      window.localStorage.setItem(ACTIVE_KEY, "legacy");
+      window.localStorage.removeItem(LEGACY_URL_KEY);
+      return seed;
+    }
+  } catch {}
+  return [];
+}
+
+function writeProfiles(list: ServerProfile[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PROFILES_KEY, JSON.stringify(list));
+  } catch {}
+}
+
+export function listServerProfiles(): ServerProfile[] {
+  return readProfilesRaw();
+}
+
+export function getActiveProfileId(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const id = window.localStorage.getItem(ACTIVE_KEY);
+    if (id) return id;
+  } catch {}
+  return null;
+}
+
+export function getActiveProfile(): ServerProfile | null {
+  const profiles = readProfilesRaw();
+  if (profiles.length === 0) return null;
+  const id = getActiveProfileId();
+  if (id) {
+    const found = profiles.find((p) => p.id === id);
+    if (found) return found;
+  }
+  return profiles[0] ?? null;
+}
+
+function generateProfileId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `srv-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function upsertServerProfile(input: {
+  id?: string;
+  label?: string;
+  url: string;
+  token?: string;
+}): ServerProfile {
+  const list = readProfilesRaw();
+  const url = input.url.trim().replace(/\/+$/, "");
+  const token = (input.token || "").trim() || undefined;
+  const label = (input.label || "").trim() || url;
+  if (input.id) {
+    const i = list.findIndex((p) => p.id === input.id);
+    if (i >= 0) {
+      list[i] = { ...list[i], label, url, token };
+      writeProfiles(list);
+      return list[i];
+    }
+  }
+  const profile: ServerProfile = { id: generateProfileId(), label, url, token };
+  list.push(profile);
+  writeProfiles(list);
+  return profile;
+}
+
+export function removeServerProfile(id: string): void {
+  const list = readProfilesRaw().filter((p) => p.id !== id);
+  writeProfiles(list);
+  const active = getActiveProfileId();
+  if (active === id) {
+    const next = list[0]?.id;
+    if (typeof window !== "undefined") {
+      try {
+        if (next) window.localStorage.setItem(ACTIVE_KEY, next);
+        else window.localStorage.removeItem(ACTIVE_KEY);
+      } catch {}
+    }
+  }
+}
+
+/** Switch the active server. Pass `null` to clear. The SSE channel is
+ * recycled if any listeners are subscribed. */
+export function setActiveProfile(id: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (id) window.localStorage.setItem(ACTIVE_KEY, id);
+    else window.localStorage.removeItem(ACTIVE_KEY);
+  } catch {}
+  if (eventSource) {
+    try { eventSource.close(); } catch {}
+    eventSource = null;
+  }
+  const hasListeners =
+    listeners.modulesChanged.size +
+      listeners.mcpChanged.size +
+      listeners.nodeRunStart.size +
+      listeners.nodeRunEnd.size +
+      listeners.envChanged.size >
+    0;
+  if (hasListeners) ensureEventSource();
+}
 
 export function getApiBase(): string {
   if (typeof window !== "undefined") {
-    try {
-      const stored = window.localStorage.getItem(API_STORAGE_KEY);
-      if (stored) return stored.replace(/\/+$/, "");
-    } catch {}
+    const active = getActiveProfile();
+    if (active?.url) return active.url;
     const injected = (window as unknown as { __N2N_API__?: string }).__N2N_API__;
     if (injected) return injected.replace(/\/+$/, "");
   }
@@ -217,28 +357,10 @@ export function getApiBase(): string {
   return "http://localhost:9999";
 }
 
-export function setApiBase(url: string): void {
-  if (typeof window === "undefined") return;
-  const clean = url.trim().replace(/\/+$/, "");
-  try {
-    if (clean) window.localStorage.setItem(API_STORAGE_KEY, clean);
-    else window.localStorage.removeItem(API_STORAGE_KEY);
-  } catch {}
-  // Force the SSE channel to reconnect against the new base. We close the
-  // existing EventSource and reopen one immediately if there are any active
-  // listeners (so the UI keeps receiving cron/webhook/module events without
-  // having to re-subscribe).
-  if (eventSource) {
-    try { eventSource.close(); } catch {}
-    eventSource = null;
-  }
-  const hasListeners =
-    listeners.modulesChanged.size +
-      listeners.cronTick.size +
-      listeners.webhookFired.size +
-      listeners.mcpChanged.size >
-    0;
-  if (hasListeners) ensureEventSource();
+export function getApiToken(): string | null {
+  if (typeof window === "undefined") return null;
+  const active = getActiveProfile();
+  return active?.token?.trim() || null;
 }
 
 export type ServerInfo = {
@@ -247,13 +369,39 @@ export type ServerInfo = {
   apiPort: number;
   webhookPort: number;
   host: string;
+  /** Whether the server requires an Authorization: Bearer token. */
+  authRequired?: boolean;
 };
 
-export async function pingServer(url: string, signal?: AbortSignal): Promise<ServerInfo> {
+export async function pingServer(
+  url: string,
+  options?: { token?: string; signal?: AbortSignal },
+): Promise<ServerInfo> {
   const clean = url.trim().replace(/\/+$/, "");
-  const res = await fetch(`${clean}/api/info`, { signal });
+  const headers: Record<string, string> = {};
+  const token = options?.token?.trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${clean}/api/info`, {
+    headers,
+    signal: options?.signal,
+  });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+/** Same as pingServer but also pings /api/health WITH the token, so the
+ * caller can know the token is valid even if /api/info is public. */
+export async function probeAuth(
+  url: string,
+  token: string,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; status: number }> {
+  const clean = url.trim().replace(/\/+$/, "");
+  const res = await fetch(`${clean}/api/health`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal,
+  });
+  return { ok: res.ok, status: res.status };
 }
 
 async function http<T = unknown>(
@@ -268,6 +416,8 @@ async function http<T = unknown>(
     headers["Content-Type"] = headers["Content-Type"] || "application/json";
     payload = typeof body === "string" ? body : JSON.stringify(body);
   }
+  const token = getApiToken();
+  if (token && !headers.Authorization) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(`${getApiBase()}${path}`, { method, headers, body: payload, ...init });
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
@@ -286,16 +436,18 @@ async function http<T = unknown>(
 
 type EventListeners = {
   modulesChanged: Set<() => void>;
-  cronTick: Set<(p: { id: string }) => void>;
-  webhookFired: Set<(p: WebhookEvent) => void>;
   mcpChanged: Set<() => void>;
+  nodeRunStart: Set<(p: NodeRunStartEvent) => void>;
+  nodeRunEnd: Set<(p: NodeRunEndEvent) => void>;
+  envChanged: Set<(env: Record<string, string>) => void>;
 };
 
 const listeners: EventListeners = {
   modulesChanged: new Set(),
-  cronTick: new Set(),
-  webhookFired: new Set(),
   mcpChanged: new Set(),
+  nodeRunStart: new Set(),
+  nodeRunEnd: new Set(),
+  envChanged: new Set(),
 };
 
 let eventSource: EventSource | null = null;
@@ -304,22 +456,34 @@ let eventReconnect: ReturnType<typeof setTimeout> | null = null;
 function ensureEventSource(): void {
   if (eventSource || typeof window === "undefined") return;
   try {
-    const es = new EventSource(`${getApiBase()}/api/events`);
+    // EventSource can't set headers, so we authenticate via ?token=… when a
+    // token is configured. The server checks both the header and the query.
+    const token = getApiToken();
+    const eventUrl =
+      `${getApiBase()}/api/events` +
+      (token ? `?token=${encodeURIComponent(token)}` : "");
+    const es = new EventSource(eventUrl);
     eventSource = es;
     es.addEventListener("modulesChanged", () => listeners.modulesChanged.forEach((cb) => cb()));
-    es.addEventListener("cronTick", (e) => {
-      try {
-        const p = JSON.parse((e as MessageEvent).data);
-        listeners.cronTick.forEach((cb) => cb(p));
-      } catch {}
-    });
-    es.addEventListener("webhookFired", (e) => {
-      try {
-        const p = JSON.parse((e as MessageEvent).data);
-        listeners.webhookFired.forEach((cb) => cb(p));
-      } catch {}
-    });
     es.addEventListener("mcpChanged", () => listeners.mcpChanged.forEach((cb) => cb()));
+    es.addEventListener("nodeRunStart", (e) => {
+      try {
+        const p = JSON.parse((e as MessageEvent).data);
+        listeners.nodeRunStart.forEach((cb) => cb(p));
+      } catch {}
+    });
+    es.addEventListener("nodeRunEnd", (e) => {
+      try {
+        const p = JSON.parse((e as MessageEvent).data);
+        listeners.nodeRunEnd.forEach((cb) => cb(p));
+      } catch {}
+    });
+    es.addEventListener("envChanged", (e) => {
+      try {
+        const p = JSON.parse((e as MessageEvent).data);
+        listeners.envChanged.forEach((cb) => cb(p));
+      } catch {}
+    });
     es.onerror = () => {
       es.close();
       eventSource = null;
@@ -365,9 +529,15 @@ const api: N2nApi = {
     const promise: Promise<ChatResult> = (async () => {
       let res: Response;
       try {
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        };
+        const token = getApiToken();
+        if (token) headers.Authorization = `Bearer ${token}`;
         res = await fetch(`${getApiBase()}/api/ai/chat`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+          headers,
           body: JSON.stringify({ id, messages, options }),
           signal: controller.signal,
         });
@@ -461,7 +631,13 @@ const api: N2nApi = {
   exportProjectToFile: async (id) => {
     if (typeof window === "undefined") return { canceled: true } as const;
     try {
-      const res = await fetch(`${getApiBase()}/api/projects/${encodeURIComponent(id)}/export`);
+      const token = getApiToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(
+        `${getApiBase()}/api/projects/${encodeURIComponent(id)}/export`,
+        { headers },
+      );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const cd = res.headers.get("Content-Disposition") || "";
@@ -515,31 +691,19 @@ const api: N2nApi = {
     });
   },
 
-  cronRegister: async (id, intervalMs) => {
-    await http("POST", "/api/cron/register", { id, intervalMs });
-  },
-  cronUnregister: async (id) => {
-    await http("POST", "/api/cron/unregister", { id });
-  },
-  cronUnregisterAll: async () => {
-    await http("POST", "/api/cron/unregisterAll");
-  },
-  onCronTick: (cb) => subscribe("cronTick", cb),
-
-  webhookRegister: async (nodeId, path, response) => {
-    await http("POST", "/api/webhooks/register", { nodeId, path, response });
-  },
-  webhookUnregister: async (nodeId) => {
-    await http("POST", "/api/webhooks/unregister", { nodeId });
-  },
-  webhookUnregisterAll: async () => {
-    await http("POST", "/api/webhooks/unregisterAll");
-  },
   webhookPort: async () => {
     const { port } = await http<{ port: number }>("GET", "/api/webhooks/port");
     return port;
   },
-  onWebhookFired: (cb) => subscribe("webhookFired", cb),
+  runProjectNode: (projectId, nodeId) =>
+    http<RunResult>(
+      "POST",
+      `/api/projects/${encodeURIComponent(projectId)}/runNode`,
+      { nodeId },
+    ),
+  onNodeRunStart: (cb) => subscribe("nodeRunStart", cb),
+  onNodeRunEnd: (cb) => subscribe("nodeRunEnd", cb),
+  onEnvChanged: (cb) => subscribe("envChanged", cb),
 
   appendHistory: async (entry) => {
     await http("POST", "/api/history", entry);

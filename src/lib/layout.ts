@@ -1,19 +1,39 @@
 import type { CanvasNode, Edge, ModuleManifest } from "./types";
 
-export const NODE_WIDTH = 200;
-export const NODE_BASE_HEIGHT = 110;
+export const NODE_DIAMETER = 96;
+export const NODE_WIDTH = NODE_DIAMETER;
+export const NODE_BASE_HEIGHT = NODE_DIAMETER;
 
-export function socketYOffset(index: number, count: number): number {
-  if (count <= 0) return NODE_BASE_HEIGHT / 2;
-  return ((index + 1) / (count + 1)) * NODE_BASE_HEIGHT;
+// Outputs spread across a 120° arc on the right hemisphere of the circle.
+const OUTPUT_ARC = (Math.PI * 2) / 3;
+
+export function outputSocketAngle(index: number, count: number): number {
+  if (count <= 1) return 0;
+  return -OUTPUT_ARC / 2 + (index / (count - 1)) * OUTPUT_ARC;
 }
 
-// Single visual input handle, always centered vertically.
+// Position of an output socket relative to a node of given size, top-left origin.
+export function outputSocketPosition(
+  index: number,
+  count: number,
+  width: number,
+  height: number,
+): { x: number; y: number } {
+  const rx = width / 2;
+  const ry = height / 2;
+  const angle = outputSocketAngle(index, count);
+  return {
+    x: rx + rx * Math.cos(angle),
+    y: ry + ry * Math.sin(angle),
+  };
+}
+
+// Single visual input handle, on the left-mid edge of the circle.
 export function inputAnchor(node: CanvasNode): { x: number; y: number } {
-  return { x: node.x, y: node.y + NODE_BASE_HEIGHT / 2 };
+  return { x: node.x, y: node.y + node.height / 2 };
 }
 
-// One handle per output socket, distributed vertically.
+// One handle per output socket, distributed along the right semicircle.
 export function outputAnchor(
   node: CanvasNode,
   manifest: ModuleManifest | undefined,
@@ -23,10 +43,8 @@ export function outputAnchor(
   const found = sockets.findIndex((s) => s.name === socketName);
   const index = found < 0 ? 0 : found;
   const total = sockets.length || 1;
-  return {
-    x: node.x + node.width,
-    y: node.y + socketYOffset(index, total),
-  };
+  const pos = outputSocketPosition(index, total, node.width, node.height);
+  return { x: node.x + pos.x, y: node.y + pos.y };
 }
 
 // Layered ("Sugiyama-lite") graph layout: depth = longest path from sources,
@@ -39,8 +57,8 @@ export function autoLayout(
   const positions = new Map<string, { x: number; y: number }>();
   if (nodes.length === 0) return positions;
 
-  const COL_GAP = 280;
-  const ROW_GAP = 50;
+  const COL_GAP = 240;
+  const ROW_GAP = 60;
 
   const incoming = new Map<string, string[]>();
   for (const n of nodes) incoming.set(n.id, []);

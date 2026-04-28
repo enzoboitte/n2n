@@ -2,7 +2,7 @@
 
 import { useCallback } from "react";
 import { ParamField } from "@/components/ui/ParamField";
-import { NODE_BASE_HEIGHT, socketYOffset } from "@/lib/layout";
+import { outputSocketPosition } from "@/lib/layout";
 import type {
   CanvasNode as CanvasNodeData,
   ModuleManifest,
@@ -67,8 +67,6 @@ export function CanvasNode({
         return; // shift-click toggles selection without dragging
       }
 
-      // Snapshot the drag set: if I'm in selection, drag the whole group;
-      // otherwise replace selection with me and drag just me.
       let dragIds: string[];
       if (selected) {
         dragIds = Array.from(selectedIds);
@@ -109,13 +107,14 @@ export function CanvasNode({
   // receive values through `letters` and can reference them via {a}, {b}…
   // template substitution in any string param.
   const hasInput = !!module;
-  const showOutputLabels = outputs.length > 1;
   const hasParams = !!module && module.params.length > 0;
   const inlineParams =
     module?.params.filter((p) => INLINE_TYPES.includes(p.type)) ?? [];
   const color = module?.color ?? "#94a3b8";
   const name = module?.name ?? `Module manquant (${node.moduleId})`;
   const result = node.result;
+
+  const resultStatus = resultStatusOf(result);
 
   return (
     <div
@@ -126,68 +125,74 @@ export function CanvasNode({
         e.stopPropagation();
         if (hasParams) onConfigure(node.id);
       }}
-      className={[
-        "absolute flex flex-col rounded-lg border bg-white shadow-sm transition-shadow dark:bg-slate-800",
-        selected
-          ? "border-indigo-500 shadow-md ring-2 ring-indigo-500/20 dark:border-indigo-400"
-          : "border-slate-200 hover:shadow dark:border-slate-700",
-      ].join(" ")}
+      className="group/node absolute"
       style={{
         left: node.x,
         top: node.y,
         width: node.width,
-        minHeight: node.height,
+        height: node.height,
         cursor: isSpaceDown ? "inherit" : "move",
       }}
     >
-      {hasInput && (
+      <div
+        className={[
+          "relative flex h-full w-full flex-col items-center justify-center overflow-hidden rounded-full border-[3px] bg-white text-center shadow-sm transition-shadow dark:bg-slate-800",
+          selected
+            ? "shadow-md ring-2 ring-indigo-500/30 dark:ring-indigo-400/30"
+            : "hover:shadow",
+        ].join(" ")}
+        style={{
+          borderColor: selected ? "#6366f1" : color,
+          boxShadow: selected ? undefined : `0 0 0 1px ${color}26`,
+        }}
+        title={module?.description ?? name}
+      >
         <span
-          data-socket-direction="input"
-          title="Entrée"
-          className="absolute -left-1.5 h-3 w-3 -translate-y-1/2 rounded-full border-2 border-white bg-slate-300 dark:border-slate-800 dark:bg-slate-600"
-          style={{ top: `${NODE_BASE_HEIGHT / 2}px` }}
+          className="absolute top-2 h-1.5 w-1.5 rounded-full"
+          style={{ background: color }}
         />
-      )}
 
-      {outputs.map((s, i) => (
-        <span
-          key={`out-${s.name}`}
-          data-socket-name={s.name}
-          data-socket-direction="output"
-          title={`Glisser pour relier (${s.label ?? s.name})`}
-          onMouseDown={(e) => onStartConnect(node.id, s.name, e)}
-          className="absolute -right-1.5 z-10 h-3 w-3 -translate-y-1/2 cursor-crosshair rounded-full border-2 border-white bg-indigo-500 transition hover:scale-125 dark:border-slate-800"
-          style={{ top: `${socketYOffset(i, outputs.length)}px` }}
-        />
-      ))}
-      {showOutputLabels &&
-        outputs.map((s, i) => (
-          <span
-            key={`out-label-${s.name}`}
-            className="pointer-events-none absolute right-2 -translate-y-1/2 text-[10px] text-slate-500 dark:text-slate-400"
-            style={{ top: `${socketYOffset(i, outputs.length)}px` }}
-          >
-            {s.label ?? s.name}
-          </span>
-        ))}
+        <span className="line-clamp-2 px-2.5 text-[10px] font-medium leading-tight text-slate-800 dark:text-slate-100">
+          {name}
+        </span>
 
-      <div className="flex items-center justify-between gap-1 border-b border-slate-100 px-3 py-2 dark:border-slate-700">
-        <div className="flex min-w-0 items-center gap-2">
+        {resultStatus && (
           <span
-            className="h-2.5 w-2.5 shrink-0 rounded-full"
-            style={{ background: color }}
+            className={[
+              "absolute bottom-2 h-2 w-2 rounded-full",
+              resultStatus === "ok"
+                ? "bg-emerald-500"
+                : resultStatus === "error"
+                  ? "bg-rose-500"
+                  : "bg-slate-300 dark:bg-slate-600",
+            ].join(" ")}
+            title={
+              resultStatus === "ok"
+                ? "Exécution réussie"
+                : resultStatus === "error"
+                  ? "Erreur"
+                  : "Branche non prise"
+            }
           />
-          <span className="truncate text-sm font-medium">{name}</span>
-        </div>
-        <div className="flex shrink-0 items-center">
+        )}
+
+      </div>
+
+      {/* Hover action chip: configure + run. Floats just above the disc so it
+          stays out of the way of the selected-state panel below. */}
+      <div
+        className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1 -translate-x-1/2 opacity-0 transition-opacity group-hover/node:opacity-100"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="pointer-events-auto flex items-center gap-0.5 rounded-full border border-slate-200 bg-white/95 px-1 py-0.5 shadow-sm backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
           {hasParams && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 onConfigure(node.id);
               }}
-              title="Configurer"
-              className="flex h-5 w-5 items-center justify-center rounded text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700"
+              title="Configurer (double-clic)"
+              className="flex h-5 w-5 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700"
             >
               <svg
                 width="11"
@@ -212,7 +217,7 @@ export function CanvasNode({
             }}
             disabled={running}
             title="Exécuter"
-            className="flex h-5 w-5 items-center justify-center rounded text-slate-500 hover:bg-slate-100 disabled:opacity-50 dark:text-slate-300 dark:hover:bg-slate-700"
+            className="flex h-5 w-5 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 disabled:opacity-50 dark:text-slate-300 dark:hover:bg-slate-700"
           >
             <svg
               width="10"
@@ -227,34 +232,102 @@ export function CanvasNode({
         </div>
       </div>
 
-      {selected && inlineParams.length > 0 && (
-        <div
-          className="flex flex-col gap-1.5 px-3 py-2"
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          {inlineParams.map((p) => (
-            <div key={p.name} className="flex flex-col gap-0.5">
-              <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                {p.label ?? p.name}
-              </span>
-              <ParamField
-                spec={p}
-                value={node.params[p.name]}
-                onChange={(v) => onSetParam(node.id, p.name, v)}
-                compact
-                allParams={node.params}
-                availableLetters={availableLetters}
-              />
-            </div>
-          ))}
-        </div>
+      {/* Input socket — sits on the left edge of the circle */}
+      {hasInput && (
+        <span
+          data-socket-direction="input"
+          title="Entrée"
+          className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-slate-300 dark:border-slate-800 dark:bg-slate-600"
+          style={{ left: 0, top: node.height / 2 }}
+        />
       )}
 
-      <div className="flex-1 px-3 py-2 text-xs">
-        <ResultView module={module} result={result} />
-      </div>
+      {/* Output sockets — distributed across right semicircle, with hover labels. */}
+      {outputs.map((s, i) => {
+        const pos = outputSocketPosition(
+          i,
+          outputs.length,
+          node.width,
+          node.height,
+        );
+        const labelOnLeft = pos.x < node.width / 2;
+        return (
+          <div
+            key={`out-${s.name}`}
+            className="group/output absolute -translate-x-1/2 -translate-y-1/2"
+            style={{ left: pos.x, top: pos.y }}
+          >
+            <span
+              data-socket-name={s.name}
+              data-socket-direction="output"
+              onMouseDown={(e) => onStartConnect(node.id, s.name, e)}
+              title={`Glisser pour relier (${s.label ?? s.name})`}
+              className="block h-3 w-3 cursor-crosshair rounded-full border-2 border-white bg-indigo-500 transition hover:scale-125 dark:border-slate-800"
+            />
+            {outputs.length > 1 && (
+              <span
+                className={[
+                  "pointer-events-none absolute top-1/2 -translate-y-1/2 whitespace-nowrap rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-700 opacity-0 shadow-sm transition-opacity group-hover/output:opacity-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200",
+                  labelOnLeft ? "right-4" : "left-4",
+                ].join(" ")}
+              >
+                {s.label ?? s.name}
+              </span>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Inline params + result preview, anchored under the disc and only
+          shown when the node is selected. Keeps the circle uncluttered. */}
+      {selected && (inlineParams.length > 0 || result) && (
+        <div
+          className="absolute left-1/2 top-full z-10 mt-2 w-56 -translate-x-1/2 rounded-lg border border-slate-200 bg-white p-2 shadow-md dark:border-slate-700 dark:bg-slate-800"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {inlineParams.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              {inlineParams.map((p) => (
+                <div key={p.name} className="flex flex-col gap-0.5">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    {p.label ?? p.name}
+                  </span>
+                  <ParamField
+                    spec={p}
+                    value={node.params[p.name]}
+                    onChange={(v) => onSetParam(node.id, p.name, v)}
+                    compact
+                    allParams={node.params}
+                    availableLetters={availableLetters}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+          {result && (
+            <div
+              className={[
+                "text-xs",
+                inlineParams.length > 0
+                  ? "mt-2 border-t border-slate-100 pt-2 dark:border-slate-700"
+                  : "",
+              ].join(" ")}
+            >
+              <ResultView module={module} result={result} />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
+}
+
+function resultStatusOf(
+  result: RunResult | null,
+): "ok" | "error" | "skipped" | null {
+  if (!result) return null;
+  if ("skipped" in result) return "skipped";
+  return result.ok ? "ok" : "error";
 }
 
 function ResultView({
@@ -288,7 +361,6 @@ function ResultView({
     return <span className="text-slate-400">(vide)</span>;
   }
 
-  // Show only the active branches (non-null) for branch-style modules
   const isBranch = (module?.outputs.length ?? 0) > 1;
   const visible = isBranch
     ? entries.filter(([, v]) => v !== null && v !== undefined)

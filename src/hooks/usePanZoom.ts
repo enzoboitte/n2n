@@ -84,6 +84,11 @@ export function usePanZoom(initial: Viewport = INITIAL): UsePanZoomReturn {
 
       if (e.ctrlKey || e.metaKey) {
         setViewport((vp) => zoomAt(vp, cx, cy, -e.deltaY * ZOOM_SPEED));
+      } else if (e.shiftKey) {
+        // Shift + wheel → horizontal pan. Trackpads already report deltaX
+        // natively, so respect that and otherwise reroute deltaY → deltaX.
+        const dx = e.deltaX !== 0 ? e.deltaX : e.deltaY;
+        setViewport((vp) => ({ ...vp, x: vp.x - dx }));
       } else {
         setViewport((vp) => ({
           ...vp,
