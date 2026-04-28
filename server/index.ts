@@ -34,6 +34,12 @@ const API_PORT = parseInt(process.env.N2N_PORT || "9999", 10);
 const WEBHOOK_PORT_RAW = process.env.N2N_WEBHOOK_PORT;
 const WEBHOOK_PORT = WEBHOOK_PORT_RAW ? parseInt(WEBHOOK_PORT_RAW, 10) : null;
 const ALLOWED_ORIGIN = process.env.N2N_CORS_ORIGIN || "*";
+// Optional bearer token. When set, every /api/* call must present
+// `Authorization: Bearer <token>` (or `?token=` for SSE/EventSource which
+// can't set headers). Webhooks ignore this — they have their own per-route
+// secret. /api/health and /api/info always stay reachable so onboarding
+// clients can probe the server before authenticating.
+const API_TOKEN = (process.env.N2N_API_TOKEN || "").trim();
 
 const DEPRECATED_MODULES = [
   "bool-source", "bool-and", "bool-or", "bool-not", "bool-xor",
@@ -477,8 +483,29 @@ function cronUnregisterAll(): void {
 
 // ---------- webhooks ----------
 
-type WebhookRoute = { nodeId: string; response: any };
+type WebhookRoute = { nodeId: string; response: any; secret?: string };
 const webhookRoutes = new Map<string, WebhookRoute>();
+
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let out = 0;
+  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return out === 0;
+}
+
+function checkWebhookSecret(req: Request, url: URL, secret: string): boolean {
+  if (!secret) return true;
+  const auth = req.headers.get("authorization") || "";
+  if (auth.toLowerCase().startsWith("bearer ")) {
+    if (constantTimeEqual(auth.slice(7).trim(), secret)) return true;
+  }
+  const headerKey =
+    req.headers.get("x-webhook-secret") || req.headers.get("x-api-key") || "";
+  if (headerKey && constantTimeEqual(headerKey, secret)) return true;
+  const queryKey = url.searchParams.get("key") || url.searchParams.get("token") || "";
+  if (queryKey && constantTimeEqual(queryKey, secret)) return true;
+  return false;
+}
 
 function substituteRequestVars(s: any, vars: Record<string, any>): any {
   if (typeof s !== "string") return s;
@@ -512,6 +539,12 @@ async function handleWebhook(req: Request, route: string): Promise<Response> {
     return new Response(`no webhook registered for "${route}"`, { status: 404 });
   }
   const url = new URL(req.url);
+  if (target.secret && !checkWebhookSecret(req, url, target.secret)) {
+    return new Response("unauthorized", {
+      status: 401,
+      headers: { "WWW-Authenticate": "Bearer" },
+    });
+  }
   const body = req.method === "GET" || req.method === "HEAD" ? "" : await req.text();
   const query = Object.fromEntries(url.searchParams.entries());
   const headers = Object.fromEntries(req.headers.entries());
@@ -1034,8 +1067,20 @@ const ROUTES: RouteMatch[] = [
 
   // Webhooks (registry)
   route("POST", "/api/webhooks/register", async (req) => {
-    const { nodeId, path, response } = await readJson<{ nodeId: string; path: string; response?: any }>(req);
-    if (path) webhookRoutes.set(path, { nodeId, response: response || null });
+    const { nodeId, path, response, secret } = await readJson<{
+      nodeId: string;
+      path: string;
+      response?: any;
+      secret?: string;
+    }>(req);
+    if (path) {
+      const trimmed = (secret ?? "").trim();
+      webhookRoutes.set(path, {
+        nodeId,
+        response: response || null,
+        secret: trimmed || undefined,
+      });
+    }
     return json({ ok: true });
   }),
   route("POST", "/api/webhooks/unregister", async (req) => {
@@ -1103,26 +1148,57 @@ const ROUTES: RouteMatch[] = [
   // SSE event channel
   route("GET", "/api/events", () => eventStream()),
 
-  // Health / info — the web UI calls this to validate a server URL during onboarding.
+  // Health / info — the web UI calls this to validate a server URL during
+  // onboarding. Both endpoints are intentionally unauthenticated so that the
+  // client can probe the server before knowing whether it needs a token.
   route("GET", "/api/info", async () => json({
     name: "n2n",
     version: "0.1.0",
     apiPort: API_PORT,
     webhookPort: WEBHOOK_PORT ?? API_PORT,
     host: HOST,
+    authRequired: !!API_TOKEN,
   })),
   route("GET", "/api/health", () => json({ ok: true })),
 ];
+
+// Routes that stay reachable without a token.
+const AUTH_BYPASS_PATHS = new Set(["/api/health", "/api/info"]);
+
+function checkApiAuth(req: Request, url: URL): Response | null {
+  if (!API_TOKEN) return null;
+  if (AUTH_BYPASS_PATHS.has(url.pathname)) return null;
+  // Allow EventSource (SSE) which can't set headers — accept ?token=…
+  const queryToken = url.searchParams.get("token");
+  if (queryToken && constantTimeEqual(queryToken, API_TOKEN)) return null;
+  const auth = req.headers.get("authorization") || "";
+  if (auth.toLowerCase().startsWith("bearer ")) {
+    const tok = auth.slice(7).trim();
+    if (constantTimeEqual(tok, API_TOKEN)) return null;
+  }
+  return new Response(JSON.stringify({ error: "unauthorized" }), {
+    status: 401,
+    headers: {
+      "Content-Type": "application/json",
+      "WWW-Authenticate": "Bearer",
+      ...corsHeaders(),
+    },
+  });
+}
 
 async function dispatchApi(req: Request): Promise<Response> {
   const url = new URL(req.url);
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders() });
 
-  // Webhook fast-path: /webhook/<route>
+  // Webhook fast-path: /webhook/<route> — its own per-route secret applies,
+  // so it bypasses the global API token.
   if (url.pathname.startsWith("/webhook/")) {
     const route = url.pathname.slice("/webhook/".length).replace(/\/+$/, "");
     return handleWebhook(req, route);
   }
+
+  const unauthorized = checkApiAuth(req, url);
+  if (unauthorized) return unauthorized;
 
   for (const r of ROUTES) {
     if (r.method !== req.method) continue;

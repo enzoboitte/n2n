@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Canvas } from "@/components/canvas/Canvas";
 import { ChatPanel } from "@/components/ui/ChatPanel";
 import { ConfigModal } from "@/components/ui/ConfigModal";
@@ -10,10 +11,9 @@ import { McpModal } from "@/components/ui/McpModal";
 import { ModulePalette } from "@/components/ui/ModulePalette";
 import { ProjectMenu } from "@/components/ui/ProjectMenu";
 import { PromptModal } from "@/components/ui/PromptModal";
-import { SettingsModal } from "@/components/ui/SettingsModal";
 import { StatusBar } from "@/components/ui/StatusBar";
 import { Toolbar } from "@/components/ui/Toolbar";
-import { getApiBase, pingServer } from "@/lib/n2n";
+import { getActiveProfile, pingServer } from "@/lib/n2n";
 import { EnvContext } from "@/contexts/EnvContext";
 import { McpContext } from "@/contexts/McpContext";
 import { ProjectsContext } from "@/contexts/ProjectsContext";
@@ -25,7 +25,7 @@ import { useModules } from "@/hooks/useModules";
 import { useNodes } from "@/hooks/useNodes";
 import { usePanZoom } from "@/hooks/usePanZoom";
 import { useProjects } from "@/hooks/useProjects";
-import { autoLayout } from "@/lib/layout";
+import { autoLayout, NODE_BASE_HEIGHT, NODE_WIDTH } from "@/lib/layout";
 import { indexToLetter } from "@/lib/letters";
 import { getApi } from "@/lib/n2n";
 import { substituteDeep } from "@/lib/template";
@@ -112,7 +112,68 @@ type ContextState =
   | { kind: "node"; x: number; y: number; nodeId: string }
   | { kind: "canvas"; x: number; y: number };
 
+type ConnectionState =
+  | "probing"
+  | "redirecting"
+  | "connected";
+
 export default function Home() {
+  const router = useRouter();
+  const [connection, setConnection] = useState<ConnectionState>("probing");
+
+  // Probe the active profile once on mount. The workspace only mounts when
+  // we're sure we can reach the backend — otherwise we redirect to the
+  // dedicated /connect page. This keeps useProjects / useModules / etc. from
+  // firing requests against a server they shouldn't be talking to.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.n2n) {
+      setConnection("connected");
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const active = getActiveProfile();
+      const goConnect = () => {
+        setConnection("redirecting");
+        router.replace("/connect/");
+      };
+      if (!active) {
+        if (!cancelled) goConnect();
+        return;
+      }
+      try {
+        const info = await pingServer(active.url, {
+          token: active.token,
+          signal: AbortSignal.timeout(2500),
+        });
+        if (cancelled) return;
+        if (info.authRequired && !active.token) {
+          goConnect();
+          return;
+        }
+        setConnection("connected");
+      } catch {
+        if (!cancelled) goConnect();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
+  if (connection !== "connected") {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-slate-50 text-sm text-slate-500 dark:bg-slate-900 dark:text-slate-400">
+        {connection === "probing" ? "Connexion au serveur n2n…" : "Redirection…"}
+      </div>
+    );
+  }
+
+  return <Workspace />;
+}
+
+function Workspace() {
   const {
     viewport,
     isPanning,
@@ -175,24 +236,8 @@ export default function Home() {
   const [mcpOpen, setMcpOpen] = useState(false);
   // null = closed, "user" = user clicked the gear, "required" = first-run /
   // server unreachable (modal cannot be dismissed until configured).
-  const [settingsMode, setSettingsMode] = useState<null | "user" | "required">(null);
+  const workspaceRouter = useRouter();
 
-  // Boot probe: ping the configured server and force the settings modal open
-  // if it cannot be reached. We only do this once on mount, not when the user
-  // already has a working config.
-  useEffect(() => {
-    let cancelled = false;
-    if (typeof window === "undefined") return;
-    if (window.n2n) return; // Electron bridge: no remote server, skip probe.
-    (async () => {
-      try {
-        await pingServer(getApiBase(), AbortSignal.timeout(2000));
-      } catch {
-        if (!cancelled) setSettingsMode("required");
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
   const [chatOpen, setChatOpen] = useState(false);
   const [context, setContext] = useState<ContextState | null>(null);
 
@@ -243,10 +288,16 @@ export default function Home() {
   const selectedIdsRef = useRef<ReadonlySet<string>>(selectedIds);
   const loadedProjectIdRef = useRef<string | null>(null);
 
-  // Hydrate the canvas whenever a project is (re)loaded.
+  // Hydrate the canvas whenever a project is (re)loaded. Nodes are forced to
+  // a square footprint so historical (rectangular) saves render as circles.
   useEffect(() => {
     if (!loadedGraph) return;
-    setAllNodes(loadedGraph.nodes as CanvasNode[]);
+    const normalized = (loadedGraph.nodes as CanvasNode[]).map((n) => ({
+      ...n,
+      width: NODE_WIDTH,
+      height: NODE_BASE_HEIGHT,
+    }));
+    setAllNodes(normalized);
     setAllEdges(loadedGraph.edges as Edge[]);
     loadedProjectIdRef.current = loadedGraph.id;
   }, [loadedGraph, setAllNodes, setAllEdges]);
@@ -718,14 +769,20 @@ export default function Home() {
               ).map(([k, v]) => [k, String(v ?? "")]),
             ) as Record<string, string>)
           : {};
-      api.webhookRegister(n.id, p, {
-        status: String(n.params.response_status ?? "200"),
-        contentType: String(
-          n.params.response_content_type ?? "application/json",
-        ),
-        body: String(n.params.response_body ?? '{"ok":true}'),
-        headers,
-      });
+      const secret = String(n.params.secret ?? "").trim();
+      api.webhookRegister(
+        n.id,
+        p,
+        {
+          status: String(n.params.response_status ?? "200"),
+          contentType: String(
+            n.params.response_content_type ?? "application/json",
+          ),
+          body: String(n.params.response_body ?? '{"ok":true}'),
+          headers,
+        },
+        secret || undefined,
+      );
     }
 
     return () => {
@@ -945,8 +1002,8 @@ export default function Home() {
               moduleId: spec.module_id,
               x: 0,
               y: 0,
-              width: 200,
-              height: 110,
+              width: NODE_WIDTH,
+              height: NODE_BASE_HEIGHT,
               params: spec.params ?? {},
               result: null,
             }));
@@ -1219,7 +1276,7 @@ export default function Home() {
           onZoomOut={zoomOut}
           onReset={reset}
           onAutoLayout={runAutoLayout}
-          onOpenSettings={() => setSettingsMode("user")}
+          onOpenSettings={() => workspaceRouter.push("/connect/")}
           projectSlot={
             <ProjectMenu
               projects={projects}
@@ -1324,12 +1381,6 @@ export default function Home() {
           />
         )}
         {mcpOpen && <McpModal onClose={() => setMcpOpen(false)} />}
-        {settingsMode && (
-          <SettingsModal
-            required={settingsMode === "required"}
-            onClose={() => setSettingsMode(null)}
-          />
-        )}
         {context && (
           <ContextMenu
             x={context.x}

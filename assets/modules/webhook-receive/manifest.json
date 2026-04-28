@@ -1,8 +1,8 @@
 {
   "id": "webhook-receive",
   "name": "Webhook entrant",
-  "description": "Reçoit des requêtes HTTP sur http://localhost:9999/webhook/<path>. La réponse renvoyée à l'appelant est entièrement paramétrable (statut, content-type, body, headers) avec substitution des données de la requête : {request.method}, {request.body}, {request.json.foo}, {request.query.bar}, {request.headers.user-agent}, et des variables d'env globales.",
-  "version": "0.2.0",
+  "description": "Reçoit des requêtes HTTP sur http://localhost:9999/webhook/<path>. La réponse renvoyée à l'appelant est entièrement paramétrable (statut, content-type, body, headers) avec substitution des données de la requête : {request.method}, {request.body}, {request.json.foo}, {request.query.bar}, {request.headers.user-agent}, et des variables d'env globales. Si un « Secret » est défini, le serveur exige Authorization: Bearer <secret>, X-Webhook-Secret, ou ?key=<secret> et renvoie 401 sinon.",
+  "version": "0.3.0",
   "color": "#0ea5e9",
   "entry": "module.py",
   "configurable": true,
@@ -20,6 +20,12 @@
       "label": "Chemin (sans /webhook/)",
       "type": "string",
       "default": "incoming"
+    },
+    {
+      "name": "secret",
+      "label": "Secret (optionnel)",
+      "type": "string",
+      "default": ""
     },
     {
       "name": "response_status",

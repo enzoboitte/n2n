@@ -144,8 +144,16 @@ export function Canvas({
       style={{ cursor }}
     >
       <CanvasGrid viewport={viewport} />
+      <CanvasEdges
+        nodes={nodes}
+        edges={edges}
+        pending={pending}
+        viewport={viewport}
+        modulesById={modulesById}
+        onRemoveEdge={onRemoveEdge}
+      />
       <div
-        className="absolute top-0 left-0 origin-top-left will-change-transform"
+        className="absolute top-0 left-0 z-10 origin-top-left will-change-transform"
         style={{
           transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
         }}
@@ -180,14 +188,6 @@ export function Canvas({
           );
         })}
       </div>
-      <CanvasEdges
-        nodes={nodes}
-        edges={edges}
-        pending={pending}
-        viewport={viewport}
-        modulesById={modulesById}
-        onRemoveEdge={onRemoveEdge}
-      />
       {rubber && (
         <div
           className="pointer-events-none absolute border border-indigo-400 bg-indigo-400/10"
