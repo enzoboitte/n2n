@@ -19,15 +19,11 @@ export type ImportResult =
 
 export type ExportResult = { canceled: true } | { canceled: false; path: string };
 
-export type WebhookEvent = {
+export type NodeRunStartEvent = { projectId: string; nodeId: string };
+export type NodeRunEndEvent = {
+  projectId: string;
   nodeId: string;
-  path: string;
-  data: {
-    method: string;
-    body: string;
-    query: Record<string, string>;
-    headers: Record<string, string>;
-  };
+  result: RunResult;
 };
 
 export type McpToolSpec = {
@@ -151,25 +147,26 @@ type N2nApi = {
   setActiveProjectId: (id: string) => Promise<void>;
   exportProjectToFile: (id: string) => Promise<ExportResult>;
   importProjectFromFile: () => Promise<ImportResult>;
-  cronRegister: (id: string, intervalMs: number) => Promise<void>;
-  cronUnregister: (id: string) => Promise<void>;
-  cronUnregisterAll: () => Promise<void>;
-  onCronTick: (callback: (payload: { id: string }) => void) => () => void;
-  webhookRegister: (
-    nodeId: string,
-    path: string,
-    response?: {
-      status?: string | number;
-      contentType?: string;
-      body?: string;
-      headers?: Record<string, string>;
-    },
-    secret?: string,
-  ) => Promise<void>;
-  webhookUnregister: (nodeId: string) => Promise<void>;
-  webhookUnregisterAll: () => Promise<void>;
   webhookPort: () => Promise<number>;
-  onWebhookFired: (callback: (event: WebhookEvent) => void) => () => void;
+  /**
+   * Run a node within a project. The server walks predecessors, executes the
+   * node, then continues to downstream leaves. Returns the result of the
+   * requested node. Live progress is broadcast over `nodeRunStart`/`nodeRunEnd`.
+   */
+  runProjectNode: (projectId: string, nodeId: string) => Promise<RunResult>;
+  onNodeRunStart: (
+    callback: (payload: { projectId: string; nodeId: string }) => void,
+  ) => () => void;
+  onNodeRunEnd: (
+    callback: (payload: {
+      projectId: string;
+      nodeId: string;
+      result: RunResult;
+    }) => void,
+  ) => () => void;
+  onEnvChanged: (
+    callback: (env: Record<string, string>) => void,
+  ) => () => void;
   appendHistory: (entry: HistoryEntry) => Promise<void>;
   readHistory: (limit?: number) => Promise<HistoryEntry[]>;
   clearHistory: () => Promise<void>;
@@ -339,9 +336,10 @@ export function setActiveProfile(id: string | null): void {
   }
   const hasListeners =
     listeners.modulesChanged.size +
-      listeners.cronTick.size +
-      listeners.webhookFired.size +
-      listeners.mcpChanged.size >
+      listeners.mcpChanged.size +
+      listeners.nodeRunStart.size +
+      listeners.nodeRunEnd.size +
+      listeners.envChanged.size >
     0;
   if (hasListeners) ensureEventSource();
 }
@@ -438,16 +436,18 @@ async function http<T = unknown>(
 
 type EventListeners = {
   modulesChanged: Set<() => void>;
-  cronTick: Set<(p: { id: string }) => void>;
-  webhookFired: Set<(p: WebhookEvent) => void>;
   mcpChanged: Set<() => void>;
+  nodeRunStart: Set<(p: NodeRunStartEvent) => void>;
+  nodeRunEnd: Set<(p: NodeRunEndEvent) => void>;
+  envChanged: Set<(env: Record<string, string>) => void>;
 };
 
 const listeners: EventListeners = {
   modulesChanged: new Set(),
-  cronTick: new Set(),
-  webhookFired: new Set(),
   mcpChanged: new Set(),
+  nodeRunStart: new Set(),
+  nodeRunEnd: new Set(),
+  envChanged: new Set(),
 };
 
 let eventSource: EventSource | null = null;
@@ -465,19 +465,25 @@ function ensureEventSource(): void {
     const es = new EventSource(eventUrl);
     eventSource = es;
     es.addEventListener("modulesChanged", () => listeners.modulesChanged.forEach((cb) => cb()));
-    es.addEventListener("cronTick", (e) => {
-      try {
-        const p = JSON.parse((e as MessageEvent).data);
-        listeners.cronTick.forEach((cb) => cb(p));
-      } catch {}
-    });
-    es.addEventListener("webhookFired", (e) => {
-      try {
-        const p = JSON.parse((e as MessageEvent).data);
-        listeners.webhookFired.forEach((cb) => cb(p));
-      } catch {}
-    });
     es.addEventListener("mcpChanged", () => listeners.mcpChanged.forEach((cb) => cb()));
+    es.addEventListener("nodeRunStart", (e) => {
+      try {
+        const p = JSON.parse((e as MessageEvent).data);
+        listeners.nodeRunStart.forEach((cb) => cb(p));
+      } catch {}
+    });
+    es.addEventListener("nodeRunEnd", (e) => {
+      try {
+        const p = JSON.parse((e as MessageEvent).data);
+        listeners.nodeRunEnd.forEach((cb) => cb(p));
+      } catch {}
+    });
+    es.addEventListener("envChanged", (e) => {
+      try {
+        const p = JSON.parse((e as MessageEvent).data);
+        listeners.envChanged.forEach((cb) => cb(p));
+      } catch {}
+    });
     es.onerror = () => {
       es.close();
       eventSource = null;
@@ -685,31 +691,19 @@ const api: N2nApi = {
     });
   },
 
-  cronRegister: async (id, intervalMs) => {
-    await http("POST", "/api/cron/register", { id, intervalMs });
-  },
-  cronUnregister: async (id) => {
-    await http("POST", "/api/cron/unregister", { id });
-  },
-  cronUnregisterAll: async () => {
-    await http("POST", "/api/cron/unregisterAll");
-  },
-  onCronTick: (cb) => subscribe("cronTick", cb),
-
-  webhookRegister: async (nodeId, path, response, secret) => {
-    await http("POST", "/api/webhooks/register", { nodeId, path, response, secret });
-  },
-  webhookUnregister: async (nodeId) => {
-    await http("POST", "/api/webhooks/unregister", { nodeId });
-  },
-  webhookUnregisterAll: async () => {
-    await http("POST", "/api/webhooks/unregisterAll");
-  },
   webhookPort: async () => {
     const { port } = await http<{ port: number }>("GET", "/api/webhooks/port");
     return port;
   },
-  onWebhookFired: (cb) => subscribe("webhookFired", cb),
+  runProjectNode: (projectId, nodeId) =>
+    http<RunResult>(
+      "POST",
+      `/api/projects/${encodeURIComponent(projectId)}/runNode`,
+      { nodeId },
+    ),
+  onNodeRunStart: (cb) => subscribe("nodeRunStart", cb),
+  onNodeRunEnd: (cb) => subscribe("nodeRunEnd", cb),
+  onEnvChanged: (cb) => subscribe("envChanged", cb),
 
   appendHistory: async (entry) => {
     await http("POST", "/api/history", entry);

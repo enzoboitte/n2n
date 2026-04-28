@@ -33,5 +33,11 @@ export function useEnv() {
     api?.saveEnv(next).catch(() => undefined);
   }, []);
 
-  return { env, envRef, setEnv, loaded };
+  // Apply a server-side update without writing it back, so SSE-pushed env
+  // changes (envChanged broadcasts) don't loop into another PUT /api/env.
+  const setEnvLocal = useCallback((next: Record<string, string>) => {
+    setEnvState(next);
+  }, []);
+
+  return { env, envRef, setEnv, setEnvLocal, loaded };
 }

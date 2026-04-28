@@ -12,9 +12,33 @@
     "dev:electron": "concurrently -k -n next,electron -c blue,magenta \"npm:dev:next\" \"wait-on http://localhost:3000 && electron .\"",
     "build": "next build",
     "build:server": "bun build --compile --target=bun-linux-x64 server/index.ts --outfile n2n-server",
+    "build:electron": "next build && electron-builder",
     "start": "next start",
     "start:server": "bun server/index.ts",
     "lint": "eslint"
+  },
+  "build": {
+    "appId": "com.enzoboitte.n2n",
+    "productName": "n2n",
+    "files": [
+      "electron/**/*",
+      "out/**/*",
+      "assets/icon.svg"
+    ],
+    "directories": {
+      "output": "dist-electron"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": "nsis"
+    }
   },
   "dependencies": {
     "next": "^16.2.4",
@@ -29,6 +53,7 @@
     "@types/react-dom": "^19",
     "concurrently": "^9.2.1",
     "electron": "^41.3.0",
+    "electron-builder": "^26.8.1",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.4",
     "tailwindcss": "^4",

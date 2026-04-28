@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { Canvas } from "@/components/canvas/Canvas";
 import { ChatPanel } from "@/components/ui/ChatPanel";
 import { ConfigModal } from "@/components/ui/ConfigModal";
@@ -11,9 +10,14 @@ import { McpModal } from "@/components/ui/McpModal";
 import { ModulePalette } from "@/components/ui/ModulePalette";
 import { ProjectMenu } from "@/components/ui/ProjectMenu";
 import { PromptModal } from "@/components/ui/PromptModal";
+import { ServerPicker } from "@/components/ui/ServerPicker";
 import { StatusBar } from "@/components/ui/StatusBar";
 import { Toolbar } from "@/components/ui/Toolbar";
-import { getActiveProfile, pingServer } from "@/lib/n2n";
+import {
+  getActiveProfile,
+  listServerProfiles,
+  pingServer,
+} from "@/lib/n2n";
 import { EnvContext } from "@/contexts/EnvContext";
 import { McpContext } from "@/contexts/McpContext";
 import { ProjectsContext } from "@/contexts/ProjectsContext";
@@ -28,103 +32,22 @@ import { useProjects } from "@/hooks/useProjects";
 import { autoLayout, NODE_BASE_HEIGHT, NODE_WIDTH } from "@/lib/layout";
 import { indexToLetter } from "@/lib/letters";
 import { getApi } from "@/lib/n2n";
-import { substituteDeep } from "@/lib/template";
 import { SYSTEM_PROMPT, TOOLS } from "@/lib/tools";
 import type { CanvasNode, Edge, ModuleManifest, RunResult } from "@/lib/types";
-
-function stringifyValue(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
-}
-
-// Convert templated string values back to the primitive types declared in
-// the MCP tool's JSON Schema (numbers, booleans, parsed JSON for arrays/objects).
-// Strings stay strings. Anything that fails coercion is kept as-is.
-function coerceMcpArgs(
-  args: Record<string, unknown>,
-  schema: unknown,
-): Record<string, unknown> {
-  const properties =
-    (schema as { properties?: Record<string, { type?: string }> })
-      ?.properties ?? {};
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(args)) {
-    const propType = properties[k]?.type;
-    if (typeof v !== "string" || !propType) {
-      out[k] = v;
-      continue;
-    }
-    const trimmed = v.trim();
-    if (trimmed === "") continue;
-    if (propType === "number" || propType === "integer") {
-      const n = Number(trimmed);
-      out[k] = Number.isFinite(n) ? n : v;
-    } else if (propType === "boolean") {
-      const lower = trimmed.toLowerCase();
-      out[k] = lower === "true" || lower === "1" || lower === "yes";
-    } else if (propType === "array" || propType === "object") {
-      try {
-        out[k] = JSON.parse(trimmed);
-      } catch {
-        out[k] = v;
-      }
-    } else {
-      out[k] = v;
-    }
-  }
-  return out;
-}
-
-function parseHumanInterval(s: string): number {
-  const m = String(s || "").match(/^\s*(\d+)\s*(ms|s|m|h|d)?\s*$/i);
-  if (!m) return 0;
-  const n = parseInt(m[1], 10);
-  const unit = (m[2] || "s").toLowerCase();
-  const mult: Record<string, number> = {
-    ms: 1,
-    s: 1000,
-    m: 60_000,
-    h: 3_600_000,
-    d: 86_400_000,
-  };
-  return n * (mult[unit] ?? 1000);
-}
-
-function downstreamLeaves(startId: string, edges: Edge[]): string[] {
-  const reachable = new Set<string>([startId]);
-  const queue: string[] = [startId];
-  while (queue.length) {
-    const cur = queue.shift()!;
-    for (const e of edges) {
-      if (e.source === cur && !reachable.has(e.target)) {
-        reachable.add(e.target);
-        queue.push(e.target);
-      }
-    }
-  }
-  return Array.from(reachable).filter(
-    (id) => !edges.some((e) => e.source === id && reachable.has(e.target)),
-  );
-}
 
 type ContextState =
   | { kind: "node"; x: number; y: number; nodeId: string }
   | { kind: "canvas"; x: number; y: number };
 
-type ConnectionState =
-  | "probing"
-  | "redirecting"
-  | "connected";
+type ConnectionState = "probing" | "needsConnect" | "connected";
 
 export default function Home() {
-  const router = useRouter();
   const [connection, setConnection] = useState<ConnectionState>("probing");
 
-  // Probe the active profile once on mount. The workspace only mounts when
-  // we're sure we can reach the backend — otherwise we redirect to the
-  // dedicated /connect page. This keeps useProjects / useModules / etc. from
-  // firing requests against a server they shouldn't be talking to.
+  // Probe the active profile once on mount. We render the connect screen
+  // inline (not via Next routing) when there's no profile or the server is
+  // unreachable, so this keeps working under the file:// protocol that
+  // Electron uses when loading the static export.
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (window.n2n) {
@@ -134,12 +57,8 @@ export default function Home() {
     let cancelled = false;
     (async () => {
       const active = getActiveProfile();
-      const goConnect = () => {
-        setConnection("redirecting");
-        router.replace("/connect/");
-      };
       if (!active) {
-        if (!cancelled) goConnect();
+        if (!cancelled) setConnection("needsConnect");
         return;
       }
       try {
@@ -149,31 +68,73 @@ export default function Home() {
         });
         if (cancelled) return;
         if (info.authRequired && !active.token) {
-          goConnect();
+          setConnection("needsConnect");
           return;
         }
         setConnection("connected");
       } catch {
-        if (!cancelled) goConnect();
+        if (!cancelled) setConnection("needsConnect");
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [router]);
+  }, []);
 
-  if (connection !== "connected") {
+  if (connection === "probing") {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-slate-50 text-sm text-slate-500 dark:bg-slate-900 dark:text-slate-400">
-        {connection === "probing" ? "Connexion au serveur n2n…" : "Redirection…"}
+        Connexion au serveur n2n…
       </div>
     );
   }
 
-  return <Workspace />;
+  if (connection === "needsConnect") {
+    return <ConnectScreen onConnected={() => setConnection("connected")} />;
+  }
+
+  return <Workspace onOpenConnect={() => setConnection("needsConnect")} />;
 }
 
-function Workspace() {
+function ConnectScreen({ onConnected }: { onConnected: () => void }) {
+  const profiles = listServerProfiles();
+  const [hasWorking] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return !!getActiveProfile();
+  });
+  return (
+    <div className="flex min-h-screen w-full items-center justify-center bg-slate-50 px-4 py-10 dark:bg-slate-900">
+      <div className="flex w-full max-w-xl flex-col gap-3">
+        <div className="flex items-center gap-3 text-slate-700 dark:text-slate-200">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-slate-900 text-[12px] font-bold text-white dark:bg-white dark:text-slate-900">
+            n2n
+          </div>
+          <div className="flex flex-col leading-tight">
+            <span className="text-lg font-semibold">Bienvenue</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              {profiles.length === 0
+                ? "Pour commencer, déclare le serveur n2n auquel cette interface doit se connecter."
+                : "Choisis un serveur pour ouvrir tes workflows."}
+            </span>
+          </div>
+        </div>
+        <ServerPicker
+          title="Serveurs n2n"
+          subtitle="Local · VPS · prod — tes connexions sont stockées localement, jamais envoyées au serveur."
+          onConnected={onConnected}
+          onClose={hasWorking ? onConnected : undefined}
+        />
+        <p className="px-1 text-[11px] text-slate-400 dark:text-slate-500">
+          Pour héberger ton propre serveur :{" "}
+          <code>N2N_API_TOKEN=… ./n2n-server</code> derrière un proxy HTTPS,
+          puis colle l&apos;URL et le token ici.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function Workspace({ onOpenConnect }: { onOpenConnect: () => void }) {
   const {
     viewport,
     isPanning,
@@ -229,14 +190,11 @@ function Workspace() {
 
   const { modules, loading, error } = useModules();
   const mcp = useMcpServers();
-  const { env, envRef, setEnv } = useEnv();
+  const { env, envRef, setEnv, setEnvLocal } = useEnv();
   const [runningIds, setRunningIds] = useState<ReadonlySet<string>>(new Set());
   const [configuringId, setConfiguringId] = useState<string | null>(null);
   const [envOpen, setEnvOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
-  // null = closed, "user" = user clicked the gear, "required" = first-run /
-  // server unreachable (modal cannot be dismissed until configured).
-  const workspaceRouter = useRouter();
 
   const [chatOpen, setChatOpen] = useState(false);
   const [context, setContext] = useState<ContextState | null>(null);
@@ -341,505 +299,54 @@ function Workspace() {
     });
   }, []);
 
-  // Webhook payloads keyed by nodeId — populated by the IPC listener below
-  // and consumed by the runtime when a webhook node is run.
-  const webhookDataRef = useRef<Map<string, Record<string, unknown>>>(
-    new Map(),
-  );
-
+  // The graph runtime lives on the server now. The client just asks the
+  // server to run a node and the canvas updates from broadcast SSE events
+  // (nodeRunStart / nodeRunEnd / envChanged). Triggers (cron, webhook,
+  // env-watch) fire on the server too — no client connection required.
   const runNode = useCallback(
     async (id: string): Promise<RunResult | undefined> => {
       const api = getApi();
-      if (!api) return;
-
-      const cache = new Map<string, Promise<RunResult>>();
-
-      const exec = (nodeId: string): Promise<RunResult> => {
-        const cached = cache.get(nodeId);
-        if (cached) return cached;
-
-        const promise = (async (): Promise<RunResult> => {
-          const node = nodesRef.current.find((n) => n.id === nodeId);
-          if (!node) return { ok: false, error: "Nœud introuvable" };
-
-          // Pinned data short-circuits everything: the runtime returns the
-          // user-frozen outputs without running predecessors or the module.
-          if (node.pinned && typeof node.pinned === "object") {
-            const r: RunResult = {
-              ok: true,
-              outputs: node.pinned as Record<string, unknown>,
-            };
-            setResult(nodeId, r);
-            return r;
-          }
-
-          const incoming = edgesRef.current.filter(
-            (e) => e.target === nodeId,
-          );
-          const manifest = modulesById.get(node.moduleId);
-
-          const upstreams = await Promise.all(
-            incoming.map((e) => exec(e.source)),
-          );
-
-          const inputs: Record<string, unknown> = {};
-          const letters: Record<string, unknown> = {};
-          let receivedSignal = incoming.length === 0;
-
-          for (let i = 0; i < incoming.length; i++) {
-            const edge = incoming[i];
-            const upstream = upstreams[i];
-
-            if ("skipped" in upstream) continue;
-            if (!upstream.ok) {
-              const r: RunResult = {
-                ok: false,
-                error: `amont: ${upstream.error}`,
-              };
-              setResult(nodeId, r);
-              return r;
-            }
-
-            const value = upstream.outputs[edge.sourceSocket];
-            if (value === null || value === undefined) continue;
-
-            const namedSlot = manifest?.inputs[i] ?? manifest?.inputs[0];
-            if (namedSlot) inputs[namedSlot.name] = value;
-            letters[indexToLetter(i)] = value;
-            receivedSignal = true;
-          }
-
-          if (!receivedSignal) {
-            const r: RunResult = { skipped: true };
-            setResult(nodeId, r);
-            return r;
-          }
-
-          markRunning(nodeId, true);
-          const startedAt = Date.now();
-          try {
-            const currentEnv = envRef.current;
-            const vars = { ...currentEnv, ...letters };
-            const substituted = substituteDeep(node.params, vars) as Record<
-              string,
-              unknown
-            >;
-
-            // Modules handled directly by the runtime (no Python).
-            let result: RunResult;
-            if (node.moduleId === "cron-tick") {
-              const ms = Date.now();
-              result = {
-                ok: true,
-                outputs: { epoch_ms: ms, iso: new Date(ms).toISOString() },
-              };
-            } else if (node.moduleId === "webhook-receive") {
-              const data = webhookDataRef.current.get(nodeId);
-              if (!data) {
-                result = { skipped: true };
-              } else {
-                let parsed: unknown = null;
-                try {
-                  parsed =
-                    typeof data.body === "string" && data.body
-                      ? JSON.parse(data.body as string)
-                      : null;
-                } catch {
-                  parsed = null;
-                }
-                result = {
-                  ok: true,
-                  outputs: {
-                    method: data.method,
-                    body: data.body,
-                    json: parsed,
-                    query: data.query,
-                    headers: data.headers,
-                  },
-                };
-              }
-            } else if (node.moduleId === "subworkflow") {
-              result = await runChildProject(
-                String(substituted.project_id || ""),
-                inputs.value ?? letters.a ?? null,
-                false,
-              );
-            } else if (node.moduleId === "mcp-tool") {
-              const target = String(substituted.target || "").trim();
-              const sep = target.indexOf("::");
-              const server = sep >= 0 ? target.slice(0, sep) : "";
-              const toolName = sep >= 0 ? target.slice(sep + 2) : "";
-              const argsParam = substituted.arguments;
-              let toolArgs: Record<string, unknown> = {};
-              // The form-driven editor stores a dict (preferred). Fall back
-              // to a raw JSON string for backward compat with v0.2.0 nodes.
-              if (
-                argsParam &&
-                typeof argsParam === "object" &&
-                !Array.isArray(argsParam)
-              ) {
-                toolArgs = argsParam as Record<string, unknown>;
-              } else if (typeof argsParam === "string" && argsParam.trim()) {
-                try {
-                  const parsed = JSON.parse(argsParam);
-                  if (
-                    parsed &&
-                    typeof parsed === "object" &&
-                    !Array.isArray(parsed)
-                  ) {
-                    toolArgs = parsed as Record<string, unknown>;
-                  }
-                } catch {
-                  // ignore
-                }
-              } else if (
-                inputs.args &&
-                typeof inputs.args === "object" &&
-                !Array.isArray(inputs.args)
-              ) {
-                toolArgs = inputs.args as Record<string, unknown>;
-              }
-              // Coerce string values to the schema's expected primitive type
-              // so MCP servers receive proper numbers/booleans/objects rather
-              // than the templated strings produced by `{a}` substitution.
-              if (server && toolName) {
-                const srv = mcp.servers.find((s) => s.name === server);
-                const tdef = srv?.tools.find((t) => t.name === toolName);
-                if (tdef) {
-                  toolArgs = coerceMcpArgs(toolArgs, tdef.inputSchema);
-                }
-              }
-              if (!server || !toolName) {
-                result = {
-                  ok: false,
-                  error: "mcp-tool: server et tool requis",
-                };
-              } else {
-                try {
-                  const callResult = await api.mcpCallTool(
-                    server,
-                    toolName,
-                    toolArgs,
-                  );
-                  const content = callResult.content ?? [];
-                  const textParts = Array.isArray(content)
-                    ? content
-                        .filter((c) => c?.type === "text" && typeof c?.text === "string")
-                        .map((c) => c.text as string)
-                    : [];
-                  result = {
-                    ok: true,
-                    outputs: {
-                      content,
-                      text: textParts.join("\n"),
-                      isError: !!callResult.isError,
-                    },
-                  };
-                } catch (err) {
-                  result = {
-                    ok: false,
-                    error: `mcp: ${(err as Error).message}`,
-                  };
-                }
-              }
-            } else if (node.moduleId === "for-each") {
-              const list = (inputs.list ?? letters.a) as unknown;
-              if (!Array.isArray(list)) {
-                result = {
-                  ok: false,
-                  error: "for-each: l'entrée n'est pas une liste",
-                };
-              } else {
-                const childId = String(substituted.project_id || "");
-                const results: unknown[] = [];
-                for (const item of list) {
-                  const childResult = await runChildProject(
-                    childId,
-                    item,
-                    false,
-                  );
-                  if ("ok" in childResult && childResult.ok) {
-                    const outs = childResult.outputs as Record<string, unknown>;
-                    const firstKey = Object.keys(outs)[0];
-                    results.push(
-                      firstKey !== undefined ? outs[firstKey] : null,
-                    );
-                  } else {
-                    results.push(null);
-                  }
-                }
-                result = { ok: true, outputs: { results } };
-              }
-            } else {
-              result = await api.runModule(
-                node.moduleId,
-                inputs,
-                substituted,
-                letters,
-                currentEnv,
-              );
-            }
-
-            let cleaned = result;
-            if ("ok" in result && result.ok) {
-              const outs = result.outputs as Record<string, unknown>;
-              const writes = outs.__env__;
-              if (
-                writes &&
-                typeof writes === "object" &&
-                !Array.isArray(writes)
-              ) {
-                const stringWrites: Record<string, string> = {};
-                for (const [k, v] of Object.entries(
-                  writes as Record<string, unknown>,
-                )) {
-                  stringWrites[k] = stringifyValue(v);
-                }
-                setEnv({ ...envRef.current, ...stringWrites });
-                const { __env__: _drop, ...rest } = outs;
-                cleaned = { ok: true, outputs: rest };
-              }
-            }
-
-            setResult(nodeId, cleaned);
-
-            // Append to execution history (fire-and-forget, no UI blocking).
-            const durationMs = Date.now() - startedAt;
-            const ok = "ok" in cleaned ? cleaned.ok : false;
-            api
-              .appendHistory({
-                timestamp: startedAt,
-                projectId: activeProjectId,
-                nodeId,
-                moduleId: node.moduleId,
-                durationMs,
-                ok,
-                error:
-                  "ok" in cleaned && !cleaned.ok ? cleaned.error : undefined,
-                outputs:
-                  "ok" in cleaned && cleaned.ok
-                    ? (cleaned.outputs as Record<string, unknown>)
-                    : undefined,
-              })
-              .catch(() => undefined);
-
-            return cleaned;
-          } finally {
-            markRunning(nodeId, false);
-          }
-        })();
-
-        cache.set(nodeId, promise);
-        return promise;
-      };
-
-      // ----- helper for sub-workflow execution -----
-      // Runs a project's graph in isolation. Sets `__input__` env var to the
-      // provided input value. Returns the result of the project's last leaf.
-      async function runChildProject(
-        projectId: string,
-        inputValue: unknown,
-        _isolated: boolean,
-      ): Promise<RunResult> {
-        if (!projectId) {
-          return { ok: false, error: "subworkflow: project_id manquant" };
-        }
-        let child;
-        try {
-          child = await api!.loadProject(projectId);
-        } catch (err) {
-          return {
-            ok: false,
-            error: `subworkflow: ${(err as Error).message}`,
-          };
-        }
-        const childCache = new Map<string, Promise<RunResult>>();
-        const childEnv = {
-          ...envRef.current,
-          __input__: stringifyValue(inputValue),
-        };
-
-        const childExec = (childNodeId: string): Promise<RunResult> => {
-          const c = childCache.get(childNodeId);
-          if (c) return c;
-          const p = (async (): Promise<RunResult> => {
-            const cn = child.nodes.find((n) => n.id === childNodeId);
-            if (!cn) return { ok: false, error: "Nœud enfant introuvable" };
-            if (cn.pinned && typeof cn.pinned === "object") {
-              return {
-                ok: true,
-                outputs: cn.pinned as Record<string, unknown>,
-              };
-            }
-            const cIn = child.edges.filter((e) => e.target === childNodeId);
-            const cManifest = modulesById.get(cn.moduleId);
-            const cUps = await Promise.all(cIn.map((e) => childExec(e.source)));
-            const cInputs: Record<string, unknown> = {};
-            const cLetters: Record<string, unknown> = {};
-            let signal = cIn.length === 0;
-            for (let i = 0; i < cIn.length; i++) {
-              const edge = cIn[i];
-              const up = cUps[i];
-              if ("skipped" in up) continue;
-              if (!up.ok) return { ok: false, error: `amont: ${up.error}` };
-              const v = up.outputs[edge.sourceSocket];
-              if (v === null || v === undefined) continue;
-              const slot = cManifest?.inputs[i] ?? cManifest?.inputs[0];
-              if (slot) cInputs[slot.name] = v;
-              cLetters[indexToLetter(i)] = v;
-              signal = true;
-            }
-            if (!signal) return { skipped: true };
-            const cVars = { ...childEnv, ...cLetters };
-            const cSubst = substituteDeep(cn.params, cVars) as Record<
-              string,
-              unknown
-            >;
-            // Special modules inside subworkflows: only honour those that
-            // don't recurse for now (avoid sub-sub-workflows for simplicity).
-            if (cn.moduleId === "cron-tick") {
-              const ms = Date.now();
-              return {
-                ok: true,
-                outputs: { epoch_ms: ms, iso: new Date(ms).toISOString() },
-              };
-            }
-            return api!.runModule(
-              cn.moduleId,
-              cInputs,
-              cSubst,
-              cLetters,
-              childEnv,
-            );
-          })();
-          childCache.set(childNodeId, p);
-          return p;
-        };
-
-        const leaves = child.nodes.filter(
-          (n) => !child.edges.some((e) => e.source === n.id),
-        );
-        if (leaves.length === 0) {
-          return { ok: false, error: "subworkflow: aucune feuille" };
-        }
-        return childExec(leaves[leaves.length - 1].id);
+      if (!api) return undefined;
+      if (!activeProjectId) return undefined;
+      try {
+        return await api.runProjectNode(activeProjectId, id);
+      } catch (err) {
+        const r: RunResult = { ok: false, error: (err as Error).message };
+        setResult(id, r);
+        return r;
       }
-
-      return exec(id);
     },
-    [
-      modulesById,
-      envRef,
-      markRunning,
-      setEnv,
-      setResult,
-      activeProjectId,
-      mcp.servers,
-    ],
+    [activeProjectId, setResult],
   );
 
-  const runNodeRef = useRef(runNode);
-  useEffect(() => {
-    runNodeRef.current = runNode;
-  }, [runNode]);
-
-  // Cron + webhook registration: when nodes change, sync the registry
-  // in the main process. Each cron-tick node gets its own scheduler;
-  // each webhook-receive node gets its own /webhook/<path> route.
+  // Reflect the server's live execution state on the active project's
+  // canvas: spinner during runs, last result after, env updates pushed.
   useEffect(() => {
     const api = getApi();
     if (!api) return;
-    const cronNodes = nodes.filter((n) => n.moduleId === "cron-tick");
-    const webhookNodes = nodes.filter((n) => n.moduleId === "webhook-receive");
-
-    for (const n of cronNodes) {
-      const intervalMs = parseHumanInterval(String(n.params.interval ?? ""));
-      if (intervalMs > 0) api.cronRegister(n.id, intervalMs);
-    }
-    for (const n of webhookNodes) {
-      const p = String(n.params.path ?? "").trim();
-      if (!p) continue;
-      const headers =
-        n.params.response_headers &&
-        typeof n.params.response_headers === "object" &&
-        !Array.isArray(n.params.response_headers)
-          ? (Object.fromEntries(
-              Object.entries(
-                n.params.response_headers as Record<string, unknown>,
-              ).map(([k, v]) => [k, String(v ?? "")]),
-            ) as Record<string, string>)
-          : {};
-      const secret = String(n.params.secret ?? "").trim();
-      api.webhookRegister(
-        n.id,
-        p,
-        {
-          status: String(n.params.response_status ?? "200"),
-          contentType: String(
-            n.params.response_content_type ?? "application/json",
-          ),
-          body: String(n.params.response_body ?? '{"ok":true}'),
-          headers,
-        },
-        secret || undefined,
-      );
-    }
-
-    return () => {
-      for (const n of cronNodes) api.cronUnregister(n.id);
-      for (const n of webhookNodes) api.webhookUnregister(n.id);
-    };
-  }, [nodes]);
-
-  // Subscribe to cron and webhook events: on fire, run downstream leaves
-  // exactly like env-watch does.
-  useEffect(() => {
-    const api = getApi();
-    if (!api) return;
-    const offCron = api.onCronTick(({ id }) => {
-      runNodeRef.current(id);
-      const leaves = downstreamLeaves(id, edgesRef.current);
-      for (const leafId of leaves) runNodeRef.current(leafId);
+    const activeRef = activeProjectId;
+    const offStart = api.onNodeRunStart(({ projectId, nodeId }) => {
+      if (projectId !== activeRef) return;
+      markRunning(nodeId, true);
     });
-    const offWebhook = api.onWebhookFired(({ nodeId, data }) => {
-      webhookDataRef.current.set(nodeId, data);
-      runNodeRef.current(nodeId);
-      const leaves = downstreamLeaves(nodeId, edgesRef.current);
-      for (const leafId of leaves) runNodeRef.current(leafId);
+    const offEnd = api.onNodeRunEnd(({ projectId, nodeId, result }) => {
+      if (projectId !== activeRef) return;
+      setResult(nodeId, result);
+      markRunning(nodeId, false);
     });
+    const offEnv = api.onEnvChanged((next) => setEnvLocal(next));
     return () => {
-      offCron();
-      offWebhook();
+      offStart();
+      offEnd();
+      offEnv();
     };
-  }, []);
+  }, [activeProjectId, markRunning, setResult, setEnvLocal]);
 
-  const prevEnvRef = useRef<Record<string, string> | null>(null);
+  // Reset the running spinner set when switching projects so we don't show
+  // stale spinners from the previous project.
   useEffect(() => {
-    if (prevEnvRef.current === null) {
-      prevEnvRef.current = env;
-      return;
-    }
-    const prev = prevEnvRef.current;
-    const changed = new Set<string>();
-    for (const k of new Set([...Object.keys(prev), ...Object.keys(env)])) {
-      if (prev[k] !== env[k]) changed.add(k);
-    }
-    prevEnvRef.current = env;
-    if (changed.size === 0) return;
-
-    const triggered = new Set<string>();
-    for (const node of nodesRef.current) {
-      if (node.moduleId !== "env-watch") continue;
-      const watched = String(node.params.var ?? "");
-      if (!watched || !changed.has(watched)) continue;
-      const leaves = downstreamLeaves(node.id, edgesRef.current);
-      for (const leafId of leaves) {
-        if (triggered.has(leafId)) continue;
-        triggered.add(leafId);
-        runNodeRef.current(leafId);
-      }
-    }
-  }, [env]);
+    setRunningIds(new Set());
+  }, [activeProjectId]);
 
   const openFolder = useCallback(() => {
     const api = getApi();
@@ -1276,7 +783,7 @@ function Workspace() {
           onZoomOut={zoomOut}
           onReset={reset}
           onAutoLayout={runAutoLayout}
-          onOpenSettings={() => workspaceRouter.push("/connect/")}
+          onOpenSettings={onOpenConnect}
           projectSlot={
             <ProjectMenu
               projects={projects}

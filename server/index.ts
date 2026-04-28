@@ -14,6 +14,12 @@ import { join, resolve, dirname, basename, sep } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
+// Macro: bun bundles assets/modules/ into the compiled binary as a literal.
+// At dev time (bun --watch) this still runs and reads from disk, so module
+// edits round-trip without an extra build step.
+import { loadEmbeddedModules } from "./embed-modules.ts" with { type: "macro" };
+
+const EMBEDDED_MODULES = loadEmbeddedModules();
 
 // ---------- paths & env ----------
 
@@ -77,6 +83,29 @@ async function syncModule(srcDir: string, dstDir: string): Promise<void> {
   await copyDir(srcDir, dstDir);
 }
 
+async function syncEmbeddedModule(
+  id: string,
+  files: Record<string, string>,
+): Promise<void> {
+  const manifestRaw = files["manifest.json"];
+  if (!manifestRaw) return;
+  let manifest: any;
+  try { manifest = JSON.parse(manifestRaw); }
+  catch { return; }
+  const dstDir = join(MODULES_DIR, id);
+  if (await exists(dstDir)) {
+    const existing = await readManifest(dstDir);
+    if (existing?.version && manifest?.version && existing.version === manifest.version) return;
+    await rm(dstDir, { recursive: true, force: true });
+  }
+  await mkdir(dstDir, { recursive: true });
+  for (const [rel, content] of Object.entries(files)) {
+    const target = join(dstDir, rel);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content);
+  }
+}
+
 async function ensureModulesDir(): Promise<void> {
   await mkdir(MODULES_DIR, { recursive: true });
   for (const id of DEPRECATED_MODULES) {
@@ -86,10 +115,18 @@ async function ensureModulesDir(): Promise<void> {
       console.log(`[n2n] removed deprecated module: ${id}`);
     }
   }
-  if (!(await exists(BUNDLED_MODULES_DIR))) return;
-  for (const entry of await readdir(BUNDLED_MODULES_DIR, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    await syncModule(join(BUNDLED_MODULES_DIR, entry.name), join(MODULES_DIR, entry.name));
+  // Prefer the on-disk bundle when running from source — keeps `bun --watch`
+  // hot-reloads honest. The compiled binary has no assets/ folder, so it
+  // falls back to the EMBEDDED_MODULES literal inlined at build time.
+  if (await exists(BUNDLED_MODULES_DIR)) {
+    for (const entry of await readdir(BUNDLED_MODULES_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      await syncModule(join(BUNDLED_MODULES_DIR, entry.name), join(MODULES_DIR, entry.name));
+    }
+    return;
+  }
+  for (const [id, files] of Object.entries(EMBEDDED_MODULES)) {
+    await syncEmbeddedModule(id, files);
   }
 }
 
@@ -408,7 +445,12 @@ async function clearHistory(): Promise<void> {
 
 // ---------- event bus (SSE) ----------
 
-type EventName = "modulesChanged" | "cronTick" | "webhookFired" | "mcpChanged";
+type EventName =
+  | "modulesChanged"
+  | "mcpChanged"
+  | "nodeRunStart"
+  | "nodeRunEnd"
+  | "envChanged";
 
 const eventClients = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const sseEncoder = new TextEncoder();
@@ -454,37 +496,687 @@ function attachModuleWatcher(): void {
   try {
     moduleWatcher = fsWatch(MODULES_DIR, { recursive: true }, () => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => broadcast("modulesChanged"), 200);
+      timer = setTimeout(() => {
+        invalidateManifestCache();
+        broadcast("modulesChanged");
+      }, 200);
     });
   } catch (err: any) {
     console.warn(`[n2n] module watcher disabled: ${err.message}`);
   }
 }
 
-// ---------- cron ----------
+// ---------- runtime helpers ----------
+// These are server-side ports of the graph-execution helpers that used to
+// live in the client. The server is now authoritative for execution so that
+// "automatic" workflows (cron-tick, webhook-receive, env-watch) can run with
+// no UI connected.
 
-const cronTimers = new Map<string, ReturnType<typeof setInterval>>();
-
-function cronRegister(id: string, intervalMs: number): void {
-  cronUnregister(id);
-  if (!intervalMs || intervalMs < 100) return;
-  cronTimers.set(id, setInterval(() => broadcast("cronTick", { id }), intervalMs));
+function indexToLetter(i: number): string {
+  let n = i;
+  let s = "";
+  while (true) {
+    s = String.fromCharCode(97 + (n % 26)) + s;
+    n = Math.floor(n / 26) - 1;
+    if (n < 0) break;
+  }
+  return s;
 }
 
-function cronUnregister(id: string): void {
-  const h = cronTimers.get(id);
-  if (h) { clearInterval(h); cronTimers.delete(id); }
+function stringifyValue(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
 }
 
-function cronUnregisterAll(): void {
-  for (const h of cronTimers.values()) clearInterval(h);
-  cronTimers.clear();
+const VAR_RE = /\{([a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z0-9_$]+)*)\}/g;
+
+function getPath(root: unknown, path: string[]): unknown {
+  let cur: unknown = root;
+  for (const seg of path) {
+    if (cur === null || cur === undefined) return undefined;
+    if (Array.isArray(cur)) {
+      const idx = Number(seg);
+      if (Number.isFinite(idx)) { cur = cur[idx]; continue; }
+      return undefined;
+    }
+    if (typeof cur === "object") {
+      cur = (cur as Record<string, unknown>)[seg];
+      continue;
+    }
+    return undefined;
+  }
+  return cur;
+}
+
+function substituteString(s: string, vars: Record<string, unknown>): string {
+  return s.replace(VAR_RE, (match, expr: string) => {
+    const parts = expr.split(".");
+    const root = parts[0];
+    if (!(root in vars)) return match;
+    const value =
+      parts.length === 1 ? vars[root] : getPath(vars[root], parts.slice(1));
+    if (value === undefined || value === null) return match;
+    return stringifyValue(value);
+  });
+}
+
+function substituteDeep(value: unknown, vars: Record<string, unknown>): unknown {
+  if (typeof value === "string") return substituteString(value, vars);
+  if (Array.isArray(value)) return value.map((v) => substituteDeep(v, vars));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = substituteDeep(v, vars);
+    }
+    return out;
+  }
+  return value;
+}
+
+function parseHumanInterval(s: string): number {
+  const m = String(s || "").match(/^\s*(\d+)\s*(ms|s|m|h|d)?\s*$/i);
+  if (!m) return 0;
+  const n = parseInt(m[1], 10);
+  const unit = (m[2] || "s").toLowerCase();
+  const mult: Record<string, number> = {
+    ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000,
+  };
+  return n * (mult[unit] ?? 1000);
+}
+
+type GraphNode = {
+  id: string;
+  moduleId: string;
+  params?: Record<string, unknown>;
+  pinned?: Record<string, unknown> | null;
+};
+
+type GraphEdge = {
+  id: string;
+  source: string;
+  sourceSocket: string;
+  target: string;
+};
+
+function downstreamLeaves(startId: string, edges: GraphEdge[]): string[] {
+  const reachable = new Set<string>([startId]);
+  const queue: string[] = [startId];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    for (const e of edges) {
+      if (e.source === cur && !reachable.has(e.target)) {
+        reachable.add(e.target);
+        queue.push(e.target);
+      }
+    }
+  }
+  return Array.from(reachable).filter(
+    (id) => !edges.some((e) => e.source === id && reachable.has(e.target)),
+  );
+}
+
+function coerceMcpArgs(
+  args: Record<string, unknown>,
+  schema: unknown,
+): Record<string, unknown> {
+  const properties =
+    (schema as { properties?: Record<string, { type?: string }> })?.properties ?? {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) {
+    const propType = properties[k]?.type;
+    if (typeof v !== "string" || !propType) { out[k] = v; continue; }
+    const trimmed = v.trim();
+    if (trimmed === "") continue;
+    if (propType === "number" || propType === "integer") {
+      const n = Number(trimmed);
+      out[k] = Number.isFinite(n) ? n : v;
+    } else if (propType === "boolean") {
+      const lower = trimmed.toLowerCase();
+      out[k] = lower === "true" || lower === "1" || lower === "yes";
+    } else if (propType === "array" || propType === "object") {
+      try { out[k] = JSON.parse(trimmed); } catch { out[k] = v; }
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+// ---------- manifest cache ----------
+
+let manifestCache: Map<string, any> | null = null;
+
+async function getManifests(): Promise<Map<string, any>> {
+  if (manifestCache) return manifestCache;
+  const list = await listModules();
+  manifestCache = new Map(list.map((m) => [m.id, m]));
+  return manifestCache;
+}
+
+function invalidateManifestCache(): void {
+  manifestCache = null;
+}
+
+// ---------- graph runtime ----------
+
+type RunResult =
+  | { ok: true; outputs: Record<string, unknown> }
+  | { ok: false; error: string }
+  | { skipped: true };
+
+type RunCtx = {
+  projectId: string;
+  nodesById: Map<string, GraphNode>;
+  edges: GraphEdge[];
+  manifests: Map<string, any>;
+  cache: Map<string, Promise<RunResult>>;
+  triggerData: Map<string, any>; // nodeId → webhook request data
+  env: Record<string, string>;   // mutable env scoped to this run
+  persistEnv: boolean;            // top-level runs persist __env__ writes
+  emit: boolean;                  // top-level runs broadcast nodeRun events
+};
+
+function emitNodeStart(ctx: RunCtx, nodeId: string): void {
+  if (!ctx.emit) return;
+  broadcast("nodeRunStart", { projectId: ctx.projectId, nodeId });
+}
+
+function emitNodeEnd(ctx: RunCtx, nodeId: string, result: RunResult): void {
+  if (!ctx.emit) return;
+  broadcast("nodeRunEnd", { projectId: ctx.projectId, nodeId, result });
+}
+
+async function runNodeInCtx(ctx: RunCtx, nodeId: string): Promise<RunResult> {
+  const cached = ctx.cache.get(nodeId);
+  if (cached) return cached;
+
+  const promise = (async (): Promise<RunResult> => {
+    const node = ctx.nodesById.get(nodeId);
+    if (!node) return { ok: false, error: "Nœud introuvable" };
+
+    if (node.pinned && typeof node.pinned === "object") {
+      const r: RunResult = { ok: true, outputs: node.pinned as Record<string, unknown> };
+      emitNodeEnd(ctx, nodeId, r);
+      return r;
+    }
+
+    const incoming = ctx.edges.filter((e) => e.target === nodeId);
+    const manifest = ctx.manifests.get(node.moduleId);
+
+    const upstreams = await Promise.all(
+      incoming.map((e) => runNodeInCtx(ctx, e.source)),
+    );
+
+    const inputs: Record<string, unknown> = {};
+    const letters: Record<string, unknown> = {};
+    let receivedSignal = incoming.length === 0;
+
+    for (let i = 0; i < incoming.length; i++) {
+      const edge = incoming[i];
+      const upstream = upstreams[i];
+      if ("skipped" in upstream) continue;
+      if (!upstream.ok) {
+        const r: RunResult = { ok: false, error: `amont: ${upstream.error}` };
+        emitNodeEnd(ctx, nodeId, r);
+        return r;
+      }
+      const value = (upstream.outputs as Record<string, unknown>)[edge.sourceSocket];
+      if (value === null || value === undefined) continue;
+      const namedSlot = manifest?.inputs?.[i] ?? manifest?.inputs?.[0];
+      if (namedSlot?.name) inputs[namedSlot.name] = value;
+      letters[indexToLetter(i)] = value;
+      receivedSignal = true;
+    }
+
+    if (!receivedSignal) {
+      const r: RunResult = { skipped: true };
+      emitNodeEnd(ctx, nodeId, r);
+      return r;
+    }
+
+    emitNodeStart(ctx, nodeId);
+    const startedAt = Date.now();
+
+    const params = (node.params ?? {}) as Record<string, unknown>;
+    const vars = { ...ctx.env, ...letters };
+    const substituted = substituteDeep(params, vars) as Record<string, unknown>;
+
+    let result: RunResult;
+    try {
+      if (node.moduleId === "cron-tick") {
+        const ms = Date.now();
+        result = { ok: true, outputs: { epoch_ms: ms, iso: new Date(ms).toISOString() } };
+      } else if (node.moduleId === "webhook-receive") {
+        const data = ctx.triggerData.get(nodeId);
+        if (!data) {
+          result = { skipped: true };
+        } else {
+          let parsed: unknown = null;
+          try {
+            parsed = typeof data.body === "string" && data.body
+              ? JSON.parse(data.body) : null;
+          } catch { parsed = null; }
+          result = {
+            ok: true,
+            outputs: {
+              method: data.method,
+              body: data.body,
+              json: parsed,
+              query: data.query,
+              headers: data.headers,
+            },
+          };
+        }
+      } else if (node.moduleId === "subworkflow") {
+        result = await runChildProject(
+          String(substituted.project_id || ""),
+          inputs.value ?? letters.a ?? null,
+          ctx.env,
+          ctx.manifests,
+        );
+      } else if (node.moduleId === "for-each") {
+        const list = (inputs.list ?? letters.a) as unknown;
+        if (!Array.isArray(list)) {
+          result = { ok: false, error: "for-each: l'entrée n'est pas une liste" };
+        } else {
+          const childId = String(substituted.project_id || "");
+          const results: unknown[] = [];
+          for (const item of list) {
+            const cr = await runChildProject(childId, item, ctx.env, ctx.manifests);
+            if ("ok" in cr && cr.ok) {
+              const outs = cr.outputs as Record<string, unknown>;
+              const firstKey = Object.keys(outs)[0];
+              results.push(firstKey !== undefined ? outs[firstKey] : null);
+            } else {
+              results.push(null);
+            }
+          }
+          result = { ok: true, outputs: { results } };
+        }
+      } else if (node.moduleId === "mcp-tool") {
+        const target = String(substituted.target || "").trim();
+        const sep = target.indexOf("::");
+        const server = sep >= 0 ? target.slice(0, sep) : "";
+        const toolName = sep >= 0 ? target.slice(sep + 2) : "";
+        const argsParam = substituted.arguments;
+        let toolArgs: Record<string, unknown> = {};
+        if (argsParam && typeof argsParam === "object" && !Array.isArray(argsParam)) {
+          toolArgs = argsParam as Record<string, unknown>;
+        } else if (typeof argsParam === "string" && argsParam.trim()) {
+          try {
+            const parsed = JSON.parse(argsParam);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              toolArgs = parsed as Record<string, unknown>;
+            }
+          } catch { /* ignore */ }
+        } else if (
+          inputs.args && typeof inputs.args === "object" && !Array.isArray(inputs.args)
+        ) {
+          toolArgs = inputs.args as Record<string, unknown>;
+        }
+        if (!server || !toolName) {
+          result = { ok: false, error: "mcp-tool: server et tool requis" };
+        } else {
+          const c = mcpClients.get(server);
+          if (c?.connected) {
+            const tdef = c.tools.find((t) => t.name === toolName);
+            if (tdef?.inputSchema) toolArgs = coerceMcpArgs(toolArgs, tdef.inputSchema);
+          }
+          try {
+            const callResult = await callMcpToolByName(server, toolName, toolArgs);
+            const content = callResult?.content ?? [];
+            const textParts = Array.isArray(content)
+              ? content
+                  .filter((c: any) => c?.type === "text" && typeof c?.text === "string")
+                  .map((c: any) => c.text as string)
+              : [];
+            result = {
+              ok: true,
+              outputs: {
+                content,
+                text: textParts.join("\n"),
+                isError: !!callResult?.isError,
+              },
+            };
+          } catch (err: any) {
+            result = { ok: false, error: `mcp: ${err?.message || err}` };
+          }
+        }
+      } else if (node.moduleId === "env-watch") {
+        // Emits the current value of the watched env var. The downstream
+        // re-trigger on env change is handled by scheduleEnvWatchTriggers.
+        const key = String(substituted.var || params.var || "");
+        const value = key ? ctx.env[key] : "";
+        result = { ok: true, outputs: { value: value ?? "" } };
+      } else {
+        const py = await runPythonModule({
+          id: node.moduleId,
+          inputs,
+          params: substituted,
+          letters,
+          env: ctx.env,
+        });
+        if (py.ok) result = { ok: true, outputs: py.outputs ?? {} };
+        else result = { ok: false, error: py.error || "erreur inconnue" };
+      }
+
+      // __env__ side-effect: only top-level runs persist + broadcast.
+      if ("ok" in result && result.ok) {
+        const outs = result.outputs as Record<string, unknown>;
+        const writes = outs.__env__;
+        if (writes && typeof writes === "object" && !Array.isArray(writes)) {
+          const stringWrites: Record<string, string> = {};
+          for (const [k, v] of Object.entries(writes as Record<string, unknown>)) {
+            stringWrites[k] = stringifyValue(v);
+          }
+          if (ctx.persistEnv) {
+            const oldEnv = await loadEnv();
+            const newEnv = { ...oldEnv, ...stringWrites };
+            await saveEnv(newEnv);
+            ctx.env = newEnv;
+            broadcast("envChanged", newEnv);
+            const changed = new Set<string>();
+            for (const [k, v] of Object.entries(stringWrites)) {
+              if (oldEnv[k] !== v) changed.add(k);
+            }
+            if (changed.size) {
+              scheduleEnvWatchTriggers(changed).catch(() => undefined);
+            }
+          } else {
+            ctx.env = { ...ctx.env, ...stringWrites };
+          }
+          const { __env__: _drop, ...rest } = outs;
+          result = { ok: true, outputs: rest };
+        }
+      }
+    } catch (err: any) {
+      result = { ok: false, error: err?.message || String(err) };
+    }
+
+    emitNodeEnd(ctx, nodeId, result);
+
+    const durationMs = Date.now() - startedAt;
+    const ok = "ok" in result ? result.ok : false;
+    appendHistory({
+      timestamp: startedAt,
+      projectId: ctx.projectId,
+      nodeId,
+      moduleId: node.moduleId,
+      durationMs,
+      ok,
+      error: "ok" in result && !result.ok ? result.error : undefined,
+      outputs: "ok" in result && result.ok
+        ? (result.outputs as Record<string, unknown>) : undefined,
+    }).catch(() => undefined);
+
+    return result;
+  })();
+
+  ctx.cache.set(nodeId, promise);
+  return promise;
+}
+
+async function runChildProject(
+  projectId: string,
+  inputValue: unknown,
+  parentEnv: Record<string, string>,
+  manifests: Map<string, any>,
+): Promise<RunResult> {
+  if (!projectId) return { ok: false, error: "subworkflow: project_id manquant" };
+  let child: any;
+  try { child = await loadProject(projectId); }
+  catch (err: any) {
+    return { ok: false, error: `subworkflow: ${err?.message || err}` };
+  }
+  if (!Array.isArray(child?.nodes) || !Array.isArray(child?.edges)) {
+    return { ok: false, error: "subworkflow: projet invalide" };
+  }
+  const ctx: RunCtx = {
+    projectId,
+    nodesById: new Map(child.nodes.map((n: GraphNode) => [n.id, n])),
+    edges: child.edges as GraphEdge[],
+    manifests,
+    cache: new Map(),
+    triggerData: new Map(),
+    env: { ...parentEnv, __input__: stringifyValue(inputValue) },
+    persistEnv: false,
+    emit: false,
+  };
+  const leaves = (child.nodes as GraphNode[]).filter(
+    (n) => !(child.edges as GraphEdge[]).some((e) => e.source === n.id),
+  );
+  if (leaves.length === 0) return { ok: false, error: "subworkflow: aucune feuille" };
+  return runNodeInCtx(ctx, leaves[leaves.length - 1].id);
+}
+
+async function buildRunCtx(
+  projectId: string,
+  options: { triggerData?: { nodeId: string; data: any }; emit?: boolean } = {},
+): Promise<{ ctx: RunCtx; project: any } | null> {
+  let project: any;
+  try { project = await loadProject(projectId); }
+  catch { return null; }
+  if (!Array.isArray(project?.nodes) || !Array.isArray(project?.edges)) return null;
+  const manifests = await getManifests();
+  const triggerData = new Map<string, any>();
+  if (options.triggerData) {
+    triggerData.set(options.triggerData.nodeId, options.triggerData.data);
+  }
+  const ctx: RunCtx = {
+    projectId,
+    nodesById: new Map((project.nodes as GraphNode[]).map((n) => [n.id, n])),
+    edges: project.edges as GraphEdge[],
+    manifests,
+    cache: new Map(),
+    triggerData,
+    env: await loadEnv(),
+    persistEnv: true,
+    emit: options.emit ?? true,
+  };
+  return { ctx, project };
+}
+
+async function runGraphFromTrigger(
+  projectId: string,
+  triggerNodeId: string,
+  triggerData: any | null,
+): Promise<void> {
+  const built = await buildRunCtx(projectId, {
+    triggerData: triggerData ? { nodeId: triggerNodeId, data: triggerData } : undefined,
+    emit: true,
+  });
+  if (!built) return;
+  const { ctx, project } = built;
+  const leaves = downstreamLeaves(triggerNodeId, project.edges as GraphEdge[]);
+  // If the trigger has no descendants, leaves === [triggerNodeId]; otherwise
+  // running leaves walks back up to the trigger via the cache. Either way the
+  // trigger node executes exactly once.
+  const targets = leaves.length ? leaves : [triggerNodeId];
+  await Promise.all(targets.map((id) => runNodeInCtx(ctx, id)));
+}
+
+async function runManualNode(
+  projectId: string,
+  nodeId: string,
+): Promise<RunResult> {
+  const built = await buildRunCtx(projectId, { emit: true });
+  if (!built) return { ok: false, error: "Projet introuvable" };
+  const { ctx, project } = built;
+  const result = await runNodeInCtx(ctx, nodeId);
+  // Also evaluate downstream leaves so side-effects (env writes, http calls,
+  // etc.) reach the bottom of the graph — same as the client's old behavior.
+  const leaves = downstreamLeaves(nodeId, project.edges as GraphEdge[]);
+  await Promise.all(
+    leaves.filter((id) => id !== nodeId).map((id) => runNodeInCtx(ctx, id)),
+  );
+  return result;
+}
+
+async function scheduleEnvWatchTriggers(changedKeys: Set<string>): Promise<void> {
+  await mkdir(PROJECTS_DIR, { recursive: true });
+  let files: string[];
+  try { files = await readdir(PROJECTS_DIR); } catch { return; }
+  for (const f of files) {
+    if (!f.endsWith(".json")) continue;
+    let p: any;
+    try { p = JSON.parse(await readFile(join(PROJECTS_DIR, f), "utf8")); } catch { continue; }
+    if (!p?.id || !Array.isArray(p.nodes) || !Array.isArray(p.edges)) continue;
+    const triggered = new Set<string>();
+    for (const node of p.nodes as GraphNode[]) {
+      if (node.moduleId !== "env-watch") continue;
+      const watched = String((node.params as any)?.var ?? "");
+      if (!watched || !changedKeys.has(watched)) continue;
+      const leaves = downstreamLeaves(node.id, p.edges as GraphEdge[]);
+      for (const leafId of leaves) {
+        if (triggered.has(leafId)) continue;
+        triggered.add(leafId);
+        runGraphFromTrigger(p.id, leafId, null).catch(() => undefined);
+      }
+    }
+  }
+}
+
+// ---------- trigger registry ----------
+// Scans every project on disk and (re-)installs cron timers and webhook
+// routes for each cron-tick / webhook-receive node. Cron timers are
+// preserved across syncs when the interval hasn't changed, so editing
+// unrelated parts of a project doesn't reset the countdown.
+
+type CronEntry = {
+  projectId: string;
+  nodeId: string;
+  intervalMs: number;
+  timer: ReturnType<typeof setInterval>;
+};
+
+type WebhookRoute = { nodeId: string; response: any; secret?: string };
+
+const cronTriggers = new Map<string, CronEntry>(); // nodeId → entry
+const webhookRoutes = new Map<string, WebhookRoute>(); // path → route
+const webhookProjects = new Map<string, string>(); // nodeId → projectId
+
+let triggerSyncInFlight: Promise<void> | null = null;
+let triggerSyncQueued = false;
+
+function scheduleTriggerSync(): void {
+  if (triggerSyncInFlight) { triggerSyncQueued = true; return; }
+  triggerSyncInFlight = (async () => {
+    try { await syncProjectTriggers(); }
+    catch (e: any) { console.warn(`[n2n] trigger sync: ${e?.message || e}`); }
+    finally {
+      triggerSyncInFlight = null;
+      if (triggerSyncQueued) { triggerSyncQueued = false; scheduleTriggerSync(); }
+    }
+  })();
+}
+
+async function syncProjectTriggers(): Promise<void> {
+  type DesiredCron = { projectId: string; nodeId: string; intervalMs: number };
+  type DesiredWebhook = {
+    projectId: string;
+    nodeId: string;
+    path: string;
+    response: any;
+    secret?: string;
+  };
+  const desiredCrons = new Map<string, DesiredCron>();
+  const desiredWebhooks: DesiredWebhook[] = [];
+
+  await mkdir(PROJECTS_DIR, { recursive: true });
+  let files: string[];
+  try { files = await readdir(PROJECTS_DIR); } catch { files = []; }
+
+  for (const f of files) {
+    if (!f.endsWith(".json")) continue;
+    let p: any;
+    try { p = JSON.parse(await readFile(join(PROJECTS_DIR, f), "utf8")); } catch { continue; }
+    if (!p?.id || !Array.isArray(p.nodes)) continue;
+
+    for (const node of p.nodes as GraphNode[]) {
+      const params = (node.params ?? {}) as Record<string, unknown>;
+      if (node.moduleId === "cron-tick") {
+        const intervalMs = parseHumanInterval(String(params.interval ?? ""));
+        if (intervalMs < 100) continue;
+        desiredCrons.set(node.id, {
+          projectId: p.id, nodeId: node.id, intervalMs,
+        });
+      } else if (node.moduleId === "webhook-receive") {
+        const path = String(params.path ?? "").trim();
+        if (!path) continue;
+        const headersRaw = params.response_headers;
+        const headers =
+          headersRaw && typeof headersRaw === "object" && !Array.isArray(headersRaw)
+            ? Object.fromEntries(
+                Object.entries(headersRaw as Record<string, unknown>).map(
+                  ([k, v]) => [k, String(v ?? "")],
+                ),
+              )
+            : {};
+        desiredWebhooks.push({
+          projectId: p.id,
+          nodeId: node.id,
+          path,
+          response: {
+            status: String(params.response_status ?? "200"),
+            contentType: String(params.response_content_type ?? "application/json"),
+            body: String(params.response_body ?? '{"ok":true}'),
+            headers,
+          },
+          secret: String(params.secret ?? "").trim() || undefined,
+        });
+      }
+    }
+  }
+
+  // Cron diff: keep timers whose interval is unchanged; replace the rest.
+  for (const [nodeId, current] of [...cronTriggers]) {
+    const next = desiredCrons.get(nodeId);
+    if (
+      !next ||
+      next.intervalMs !== current.intervalMs ||
+      next.projectId !== current.projectId
+    ) {
+      clearInterval(current.timer);
+      cronTriggers.delete(nodeId);
+    }
+  }
+  for (const [nodeId, next] of desiredCrons) {
+    if (cronTriggers.has(nodeId)) continue;
+    const timer = setInterval(() => {
+      runGraphFromTrigger(next.projectId, nodeId, null).catch((e: any) =>
+        console.warn(`[n2n] cron ${nodeId}: ${e?.message || e}`),
+      );
+    }, next.intervalMs);
+    cronTriggers.set(nodeId, {
+      projectId: next.projectId,
+      nodeId: next.nodeId,
+      intervalMs: next.intervalMs,
+      timer,
+    });
+  }
+
+  // Webhooks: full rebuild — no timer state to preserve.
+  webhookRoutes.clear();
+  webhookProjects.clear();
+  for (const w of desiredWebhooks) {
+    webhookRoutes.set(w.path, {
+      nodeId: w.nodeId,
+      response: w.response,
+      secret: w.secret,
+    });
+    webhookProjects.set(w.nodeId, w.projectId);
+  }
+}
+
+function tearDownAllTriggers(): void {
+  for (const t of cronTriggers.values()) clearInterval(t.timer);
+  cronTriggers.clear();
+  webhookRoutes.clear();
+  webhookProjects.clear();
 }
 
 // ---------- webhooks ----------
-
-type WebhookRoute = { nodeId: string; response: any; secret?: string };
-const webhookRoutes = new Map<string, WebhookRoute>();
 
 function constantTimeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -565,10 +1257,16 @@ async function handleWebhook(req: Request, route: string): Promise<Response> {
     if (key) respHeaders[key] = val;
   }
 
-  // Fire trigger AFTER scheduling response, before returning, but don't block.
-  queueMicrotask(() => broadcast("webhookFired", {
-    nodeId: target.nodeId, path: route, data: requestData,
-  }));
+  // Schedule the graph run AFTER the response is ready so the caller doesn't
+  // wait for module execution. Errors are logged, not propagated.
+  const projectId = webhookProjects.get(target.nodeId);
+  if (projectId) {
+    queueMicrotask(() => {
+      runGraphFromTrigger(projectId, target.nodeId, requestData).catch((e: any) =>
+        console.warn(`[n2n] webhook ${target.nodeId}: ${e?.message || e}`),
+      );
+    });
+  }
 
   return new Response(responseBody, { status, headers: respHeaders });
 }
@@ -1011,11 +1709,26 @@ const ROUTES: RouteMatch[] = [
 
   // Env
   route("GET", "/api/env", async () => json(await loadEnv())),
-  route("PUT", "/api/env", async (req) => { await saveEnv(await readJson(req)); return json({ ok: true }); }),
+  route("PUT", "/api/env", async (req) => {
+    const next = await readJson<Record<string, string>>(req);
+    const old = await loadEnv();
+    await saveEnv(next || {});
+    const changed = new Set<string>();
+    for (const k of new Set([...Object.keys(old), ...Object.keys(next || {})])) {
+      if (old[k] !== (next || {})[k]) changed.add(k);
+    }
+    broadcast("envChanged", next || {});
+    if (changed.size) scheduleEnvWatchTriggers(changed).catch(() => undefined);
+    return json({ ok: true });
+  }),
 
   // Projects
   route("GET", "/api/projects", async () => json(await listProjects())),
-  route("POST", "/api/projects", async (req) => json(await createProject((await readJson<any>(req)).name))),
+  route("POST", "/api/projects", async (req) => {
+    const out = await createProject((await readJson<any>(req)).name);
+    scheduleTriggerSync();
+    return json(out);
+  }),
   route("GET", "/api/projects/active", async () => json({ id: await getActiveProjectId() })),
   route("PUT", "/api/projects/active", async (req) => {
     const { id } = await readJson<{ id: string }>(req);
@@ -1026,20 +1739,37 @@ const ROUTES: RouteMatch[] = [
     const url = new URL(req.url);
     const filename = url.searchParams.get("filename") || "imported.json";
     const raw = await req.text();
-    return json(await importProjectFromBuffer(filename, raw));
+    const out = await importProjectFromBuffer(filename, raw);
+    scheduleTriggerSync();
+    return json(out);
   }),
   route("GET", "/api/projects/:id", async (_r, p) => json(await loadProject(p.id))),
   route("PUT", "/api/projects/:id", async (req, p) => {
     const project = await readJson<any>(req);
     if (!project.id) project.id = p.id;
-    return json(await saveProjectFile(project));
+    const out = await saveProjectFile(project);
+    scheduleTriggerSync();
+    return json(out);
   }),
-  route("DELETE", "/api/projects/:id", async (_r, p) => { await deleteProject(p.id); return json({ ok: true }); }),
+  route("DELETE", "/api/projects/:id", async (_r, p) => {
+    await deleteProject(p.id);
+    scheduleTriggerSync();
+    return json({ ok: true });
+  }),
   route("POST", "/api/projects/:id/rename", async (req, p) => {
     const { name } = await readJson<{ name: string }>(req);
     return json(await renameProject(p.id, name));
   }),
-  route("POST", "/api/projects/:id/duplicate", async (_r, p) => json(await duplicateProject(p.id))),
+  route("POST", "/api/projects/:id/duplicate", async (_r, p) => {
+    const out = await duplicateProject(p.id);
+    scheduleTriggerSync();
+    return json(out);
+  }),
+  route("POST", "/api/projects/:id/runNode", async (req, p) => {
+    const { nodeId } = await readJson<{ nodeId: string }>(req);
+    if (!nodeId) return err("nodeId requis", 400);
+    return json(await runManualNode(p.id, nodeId));
+  }),
   route("GET", "/api/projects/:id/export", async (_r, p) => {
     const project = await loadProject(p.id);
     const safeName = String(project.name || "project").replace(/[^a-z0-9._-]+/gi, "_");
@@ -1052,43 +1782,8 @@ const ROUTES: RouteMatch[] = [
     });
   }),
 
-  // Cron
-  route("POST", "/api/cron/register", async (req) => {
-    const { id, intervalMs } = await readJson<{ id: string; intervalMs: number }>(req);
-    cronRegister(id, intervalMs);
-    return json({ ok: true });
-  }),
-  route("POST", "/api/cron/unregister", async (req) => {
-    const { id } = await readJson<{ id: string }>(req);
-    cronUnregister(id);
-    return json({ ok: true });
-  }),
-  route("POST", "/api/cron/unregisterAll", async () => { cronUnregisterAll(); return json({ ok: true }); }),
-
-  // Webhooks (registry)
-  route("POST", "/api/webhooks/register", async (req) => {
-    const { nodeId, path, response, secret } = await readJson<{
-      nodeId: string;
-      path: string;
-      response?: any;
-      secret?: string;
-    }>(req);
-    if (path) {
-      const trimmed = (secret ?? "").trim();
-      webhookRoutes.set(path, {
-        nodeId,
-        response: response || null,
-        secret: trimmed || undefined,
-      });
-    }
-    return json({ ok: true });
-  }),
-  route("POST", "/api/webhooks/unregister", async (req) => {
-    const { nodeId } = await readJson<{ nodeId: string }>(req);
-    for (const [k, v] of webhookRoutes) if (v.nodeId === nodeId) webhookRoutes.delete(k);
-    return json({ ok: true });
-  }),
-  route("POST", "/api/webhooks/unregisterAll", async () => { webhookRoutes.clear(); return json({ ok: true }); }),
+  // Webhooks: cron + webhook routes are derived from project state and
+  // managed by syncProjectTriggers() — no client-driven registration API.
   route("GET", "/api/webhooks/port", async () => json({ port: WEBHOOK_PORT ?? API_PORT })),
 
   // MCP
@@ -1230,6 +1925,11 @@ async function main(): Promise<void> {
   await ensureModulesDir();
   attachModuleWatcher();
   startAllMcpServers().catch((e) => console.warn(`[n2n] MCP startup failed: ${e?.message}`));
+  // Scan saved projects and install cron + webhook triggers so automatic
+  // workflows run with no UI connected.
+  await syncProjectTriggers().catch((e) =>
+    console.warn(`[n2n] initial trigger sync: ${e?.message || e}`),
+  );
 
   Bun.serve({
     port: API_PORT,
@@ -1260,7 +1960,7 @@ async function main(): Promise<void> {
 }
 
 process.on("SIGINT", () => {
-  cronUnregisterAll();
+  tearDownAllTriggers();
   stopAllMcpServers();
   if (moduleWatcher) try { moduleWatcher.close(); } catch {}
   process.exit(0);
