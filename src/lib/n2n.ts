@@ -112,6 +112,16 @@ export type ChatHandle = {
 
 export type ModuleFileEntry = { path: string; kind: "file" | "dir" };
 
+export type NodeRunningPayload = { projectId: string; nodeId: string };
+export type NodeResultPayload = {
+  projectId: string;
+  nodeId: string;
+  result: RunResult;
+  durationMs: number;
+  moduleId: string;
+};
+export type EnvChangedPayload = { changed: string[] };
+
 type N2nApi = {
   listModules: () => Promise<ModuleManifest[]>;
   runModule: (
@@ -151,7 +161,7 @@ type N2nApi = {
   setActiveProjectId: (id: string) => Promise<void>;
   exportProjectToFile: (id: string) => Promise<ExportResult>;
   importProjectFromFile: () => Promise<ImportResult>;
-  cronRegister: (id: string, intervalMs: number) => Promise<void>;
+  cronRegister: (id: string, intervalMs: number, projectId?: string | null) => Promise<void>;
   cronUnregister: (id: string) => Promise<void>;
   cronUnregisterAll: () => Promise<void>;
   onCronTick: (callback: (payload: { id: string }) => void) => () => void;
@@ -164,6 +174,7 @@ type N2nApi = {
       body?: string;
       headers?: Record<string, string>;
     },
+    projectId?: string | null,
   ) => Promise<void>;
   webhookUnregister: (nodeId: string) => Promise<void>;
   webhookUnregisterAll: () => Promise<void>;
@@ -182,6 +193,10 @@ type N2nApi = {
     args: Record<string, unknown>,
   ) => Promise<McpCallResult>;
   onMcpChanged: (callback: () => void) => () => void;
+  onNodeRunning: (callback: (payload: NodeRunningPayload) => void) => () => void;
+  onNodeResult: (callback: (payload: NodeResultPayload) => void) => () => void;
+  onEnvChanged: (callback: (payload: EnvChangedPayload) => void) => () => void;
+  runProjectNode: (projectId: string, nodeId: string) => Promise<RunResult>;
 };
 
 declare global {
@@ -289,6 +304,9 @@ type EventListeners = {
   cronTick: Set<(p: { id: string }) => void>;
   webhookFired: Set<(p: WebhookEvent) => void>;
   mcpChanged: Set<() => void>;
+  nodeRunning: Set<(p: NodeRunningPayload) => void>;
+  nodeResult: Set<(p: NodeResultPayload) => void>;
+  envChanged: Set<(p: EnvChangedPayload) => void>;
 };
 
 const listeners: EventListeners = {
@@ -296,6 +314,9 @@ const listeners: EventListeners = {
   cronTick: new Set(),
   webhookFired: new Set(),
   mcpChanged: new Set(),
+  nodeRunning: new Set(),
+  nodeResult: new Set(),
+  envChanged: new Set(),
 };
 
 let eventSource: EventSource | null = null;
@@ -320,6 +341,24 @@ function ensureEventSource(): void {
       } catch {}
     });
     es.addEventListener("mcpChanged", () => listeners.mcpChanged.forEach((cb) => cb()));
+    es.addEventListener("nodeRunning", (e) => {
+      try {
+        const p = JSON.parse((e as MessageEvent).data);
+        listeners.nodeRunning.forEach((cb) => cb(p));
+      } catch {}
+    });
+    es.addEventListener("nodeResult", (e) => {
+      try {
+        const p = JSON.parse((e as MessageEvent).data);
+        listeners.nodeResult.forEach((cb) => cb(p));
+      } catch {}
+    });
+    es.addEventListener("envChanged", (e) => {
+      try {
+        const p = JSON.parse((e as MessageEvent).data);
+        listeners.envChanged.forEach((cb) => cb(p));
+      } catch {}
+    });
     es.onerror = () => {
       es.close();
       eventSource = null;
@@ -515,8 +554,8 @@ const api: N2nApi = {
     });
   },
 
-  cronRegister: async (id, intervalMs) => {
-    await http("POST", "/api/cron/register", { id, intervalMs });
+  cronRegister: async (id, intervalMs, projectId) => {
+    await http("POST", "/api/cron/register", { id, intervalMs, projectId });
   },
   cronUnregister: async (id) => {
     await http("POST", "/api/cron/unregister", { id });
@@ -526,8 +565,8 @@ const api: N2nApi = {
   },
   onCronTick: (cb) => subscribe("cronTick", cb),
 
-  webhookRegister: async (nodeId, path, response) => {
-    await http("POST", "/api/webhooks/register", { nodeId, path, response });
+  webhookRegister: async (nodeId, path, response, projectId) => {
+    await http("POST", "/api/webhooks/register", { nodeId, path, response, projectId });
   },
   webhookUnregister: async (nodeId) => {
     await http("POST", "/api/webhooks/unregister", { nodeId });
@@ -560,6 +599,11 @@ const api: N2nApi = {
   mcpCallTool: (server, tool, args) =>
     http("POST", "/api/mcp/call", { server, tool, args }),
   onMcpChanged: (cb) => subscribe("mcpChanged", cb),
+  onNodeRunning: (cb) => subscribe("nodeRunning", cb),
+  onNodeResult: (cb) => subscribe("nodeResult", cb),
+  onEnvChanged: (cb) => subscribe("envChanged", cb),
+  runProjectNode: (projectId, nodeId) =>
+    http("POST", `/api/projects/${encodeURIComponent(projectId)}/run/${encodeURIComponent(nodeId)}`),
 };
 
 export function getApi(): N2nApi | null {

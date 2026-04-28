@@ -400,9 +400,422 @@ async function clearHistory(): Promise<void> {
   try { await unlink(HISTORY_PATH); } catch {}
 }
 
+// ---------- workflow types & utilities ----------
+
+type RunResult =
+  | { ok: true; outputs: Record<string, unknown> }
+  | { ok: false; error: string }
+  | { skipped: true };
+
+interface CanvasNode {
+  id: string;
+  moduleId: string;
+  x: number;
+  y: number;
+  params: Record<string, unknown>;
+  pinned?: Record<string, unknown> | null;
+}
+
+interface WfEdge {
+  id: string;
+  source: string;
+  sourceSocket: string;
+  target: string;
+}
+
+function indexToLetter(i: number): string {
+  let s = "";
+  let n = i + 1;
+  while (n > 0) {
+    n--;
+    s = String.fromCharCode(97 + (n % 26)) + s;
+    n = Math.floor(n / 26);
+  }
+  return s;
+}
+
+function stringifyValue(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+const SUBST_RE = /\{([a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z0-9_$]+)*)\}/g;
+
+function substGetPath(root: unknown, parts: string[]): unknown {
+  let cur: unknown = root;
+  for (const seg of parts) {
+    if (cur === null || cur === undefined) return undefined;
+    if (Array.isArray(cur)) {
+      const idx = Number(seg);
+      cur = Number.isFinite(idx) ? cur[idx] : undefined;
+    } else if (typeof cur === "object") {
+      cur = (cur as Record<string, unknown>)[seg];
+    } else return undefined;
+  }
+  return cur;
+}
+
+function substituteString(s: string, vars: Record<string, unknown>): string {
+  return s.replace(SUBST_RE, (match, expr: string) => {
+    const parts = expr.split(".");
+    const root = parts[0];
+    if (!(root in vars)) return match;
+    const value = parts.length === 1 ? vars[root] : substGetPath(vars[root], parts.slice(1));
+    if (value === undefined || value === null) return match;
+    return stringifyValue(value);
+  });
+}
+
+function substituteDeep(value: unknown, vars: Record<string, unknown>): unknown {
+  if (typeof value === "string") return substituteString(value, vars);
+  if (Array.isArray(value)) return value.map((v) => substituteDeep(v, vars));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = substituteDeep(v, vars);
+    }
+    return out;
+  }
+  return value;
+}
+
+function downstreamLeaves(startId: string, edges: WfEdge[]): string[] {
+  const reachable = new Set<string>([startId]);
+  const queue: string[] = [startId];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    for (const e of edges) {
+      if (e.source === cur && !reachable.has(e.target)) {
+        reachable.add(e.target);
+        queue.push(e.target);
+      }
+    }
+  }
+  return Array.from(reachable).filter(
+    (id) => !edges.some((e) => e.source === id && reachable.has(e.target)),
+  );
+}
+
+function parseHumanInterval(s: string): number {
+  const m = String(s || "").match(/^\s*(\d+)\s*(ms|s|m|h|d)?\s*$/i);
+  if (!m) return 0;
+  const n = parseInt(m[1], 10);
+  const unit = (m[2] || "s").toLowerCase();
+  const mult: Record<string, number> = { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+  return n * (mult[unit] ?? 1000);
+}
+
+function coerceMcpArgs(args: Record<string, unknown>, schema: unknown): Record<string, unknown> {
+  const properties =
+    (schema as { properties?: Record<string, { type?: string }> })?.properties ?? {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) {
+    const propType = properties[k]?.type;
+    if (typeof v !== "string" || !propType) { out[k] = v; continue; }
+    const trimmed = v.trim();
+    if (trimmed === "") continue;
+    if (propType === "number" || propType === "integer") {
+      const n = Number(trimmed);
+      out[k] = Number.isFinite(n) ? n : v;
+    } else if (propType === "boolean") {
+      const lower = trimmed.toLowerCase();
+      out[k] = lower === "true" || lower === "1" || lower === "yes";
+    } else if (propType === "array" || propType === "object") {
+      try { out[k] = JSON.parse(trimmed); } catch { out[k] = v; }
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+// ---------- workflow runner ----------
+
+// Webhook request data stored server-side so the orchestration engine can
+// access it when a webhook-receive node is executed.
+const webhookNodeData = new Map<string, Record<string, unknown>>();
+// Maps nodeId → projectId so the engine knows which project to run on trigger.
+const webhookNodeProjectId = new Map<string, string>();
+
+async function runChildWorkflow(
+  projectId: string,
+  inputValue: unknown,
+  parentEnv: Record<string, string>,
+): Promise<RunResult> {
+  if (!projectId) return { ok: false, error: "subworkflow: project_id manquant" };
+  let child: any;
+  try { child = await loadProject(projectId); }
+  catch (e: any) { return { ok: false, error: `subworkflow: ${e.message}` }; }
+
+  const nodes: CanvasNode[] = child.nodes || [];
+  const edges: WfEdge[] = child.edges || [];
+  const childEnv = { ...parentEnv, __input__: stringifyValue(inputValue) };
+  const childCache = new Map<string, Promise<RunResult>>();
+
+  const childExec = (nodeId: string): Promise<RunResult> => {
+    if (childCache.has(nodeId)) return childCache.get(nodeId)!;
+    const p = (async (): Promise<RunResult> => {
+      const node = nodes.find((n) => n.id === nodeId);
+      if (!node) return { ok: false, error: "Nœud enfant introuvable" };
+      if (node.pinned && typeof node.pinned === "object") {
+        return { ok: true, outputs: node.pinned as Record<string, unknown> };
+      }
+      const incoming = edges.filter((e) => e.target === nodeId);
+      let manifest: any = null;
+      try { manifest = JSON.parse(await readFile(join(MODULES_DIR, node.moduleId, "manifest.json"), "utf8")); }
+      catch {}
+      const upstreams = await Promise.all(incoming.map((e) => childExec(e.source)));
+      const inputs: Record<string, unknown> = {};
+      const letters: Record<string, unknown> = {};
+      let signal = incoming.length === 0;
+      for (let i = 0; i < incoming.length; i++) {
+        const edge = incoming[i];
+        const up = upstreams[i];
+        if ("skipped" in up) continue;
+        if (!up.ok) return { ok: false, error: `amont: ${up.error}` };
+        const v = (up as any).outputs[edge.sourceSocket];
+        if (v === null || v === undefined) continue;
+        const slot = manifest?.inputs?.[i] ?? manifest?.inputs?.[0];
+        if (slot) inputs[slot.name] = v;
+        letters[indexToLetter(i)] = v;
+        signal = true;
+      }
+      if (!signal) return { skipped: true };
+      const vars = { ...childEnv, ...letters };
+      const subst = substituteDeep(node.params, vars) as Record<string, unknown>;
+      if (node.moduleId === "cron-tick") {
+        const ms = Date.now();
+        return { ok: true, outputs: { epoch_ms: ms, iso: new Date(ms).toISOString() } };
+      }
+      return runPythonModule({ id: node.moduleId, inputs, params: subst, letters, env: childEnv });
+    })();
+    childCache.set(nodeId, p);
+    return p;
+  };
+
+  const leaves = nodes.filter((n) => !edges.some((e) => e.source === n.id));
+  if (leaves.length === 0) return { ok: false, error: "subworkflow: aucune feuille" };
+  return childExec(leaves[leaves.length - 1].id);
+}
+
+async function runWorkflow(
+  projectId: string,
+  triggerNodeId: string,
+  mode: "trigger" | "manual" = "trigger",
+): Promise<RunResult> {
+  let project: any;
+  try { project = await loadProject(projectId); }
+  catch (e: any) { return { ok: false, error: `projet: ${e.message}` }; }
+
+  const nodes: CanvasNode[] = project.nodes || [];
+  const edges: WfEdge[] = project.edges || [];
+  let currentEnv = await loadEnv();
+  const cache = new Map<string, Promise<RunResult>>();
+
+  const exec = (nodeId: string): Promise<RunResult> => {
+    if (cache.has(nodeId)) return cache.get(nodeId)!;
+    const p = (async (): Promise<RunResult> => {
+      const node = nodes.find((n) => n.id === nodeId);
+      if (!node) return { ok: false, error: `Nœud ${nodeId} introuvable` };
+
+      if (node.pinned && typeof node.pinned === "object") {
+        const r: RunResult = { ok: true, outputs: node.pinned as Record<string, unknown> };
+        broadcast("nodeResult", { projectId, nodeId, result: r, durationMs: 0, moduleId: node.moduleId });
+        return r;
+      }
+
+      const incoming = edges.filter((e) => e.target === nodeId);
+      let manifest: any = null;
+      try { manifest = JSON.parse(await readFile(join(MODULES_DIR, node.moduleId, "manifest.json"), "utf8")); }
+      catch {}
+
+      const upstreams = await Promise.all(incoming.map((e) => exec(e.source)));
+      const inputs: Record<string, unknown> = {};
+      const letters: Record<string, unknown> = {};
+      let receivedSignal = incoming.length === 0;
+
+      for (let i = 0; i < incoming.length; i++) {
+        const edge = incoming[i];
+        const upstream = upstreams[i];
+        if ("skipped" in upstream) continue;
+        if (!upstream.ok) {
+          const r: RunResult = { ok: false, error: `amont: ${upstream.error}` };
+          broadcast("nodeResult", { projectId, nodeId, result: r, durationMs: 0, moduleId: node.moduleId });
+          return r;
+        }
+        const value = (upstream as any).outputs[edge.sourceSocket];
+        if (value === null || value === undefined) continue;
+        const namedSlot = manifest?.inputs?.[i] ?? manifest?.inputs?.[0];
+        if (namedSlot) inputs[namedSlot.name] = value;
+        letters[indexToLetter(i)] = value;
+        receivedSignal = true;
+      }
+
+      if (!receivedSignal) {
+        const r: RunResult = { skipped: true };
+        broadcast("nodeResult", { projectId, nodeId, result: r, durationMs: 0, moduleId: node.moduleId });
+        return r;
+      }
+
+      broadcast("nodeRunning", { projectId, nodeId });
+      const startedAt = Date.now();
+
+      try {
+        const vars: Record<string, unknown> = { ...currentEnv, ...letters };
+        const substituted = substituteDeep(node.params, vars) as Record<string, unknown>;
+
+        let result: RunResult;
+
+        if (node.moduleId === "cron-tick") {
+          const ms = Date.now();
+          result = { ok: true, outputs: { epoch_ms: ms, iso: new Date(ms).toISOString() } };
+        } else if (node.moduleId === "webhook-receive") {
+          const data = webhookNodeData.get(nodeId);
+          if (!data) {
+            result = { skipped: true };
+          } else {
+            let parsed: unknown = null;
+            try { parsed = typeof data.body === "string" && data.body ? JSON.parse(data.body as string) : null; }
+            catch {}
+            result = {
+              ok: true,
+              outputs: { method: data.method, body: data.body, json: parsed, query: data.query, headers: data.headers },
+            };
+          }
+        } else if (node.moduleId === "subworkflow") {
+          result = await runChildWorkflow(
+            String(substituted.project_id || ""),
+            inputs.value ?? letters.a ?? null,
+            currentEnv,
+          );
+        } else if (node.moduleId === "mcp-tool") {
+          const target = String(substituted.target || "").trim();
+          const sep = target.indexOf("::");
+          const server = sep >= 0 ? target.slice(0, sep) : "";
+          const toolName = sep >= 0 ? target.slice(sep + 2) : "";
+          const argsParam = substituted.arguments;
+          let toolArgs: Record<string, unknown> = {};
+          if (argsParam && typeof argsParam === "object" && !Array.isArray(argsParam)) {
+            toolArgs = argsParam as Record<string, unknown>;
+          } else if (typeof argsParam === "string" && argsParam.trim()) {
+            try {
+              const parsed = JSON.parse(argsParam);
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) toolArgs = parsed;
+            } catch {}
+          } else if (inputs.args && typeof inputs.args === "object" && !Array.isArray(inputs.args)) {
+            toolArgs = inputs.args as Record<string, unknown>;
+          }
+          if (server && toolName) {
+            const c = mcpClients.get(server);
+            const tdef = c?.tools.find((t) => t.name === toolName);
+            if (tdef) toolArgs = coerceMcpArgs(toolArgs, tdef.inputSchema);
+          }
+          if (!server || !toolName) {
+            result = { ok: false, error: "mcp-tool: server et tool requis" };
+          } else {
+            try {
+              const callResult = await callMcpToolByName(server, toolName, toolArgs);
+              const content = callResult.content ?? [];
+              const textParts = Array.isArray(content)
+                ? content.filter((c: any) => c?.type === "text" && typeof c?.text === "string").map((c: any) => c.text as string)
+                : [];
+              result = { ok: true, outputs: { content, text: textParts.join("\n"), isError: !!callResult.isError } };
+            } catch (err: any) {
+              result = { ok: false, error: `mcp: ${err.message}` };
+            }
+          }
+        } else if (node.moduleId === "for-each") {
+          const list = (inputs.list ?? letters.a) as unknown;
+          if (!Array.isArray(list)) {
+            result = { ok: false, error: "for-each: l'entrée n'est pas une liste" };
+          } else {
+            const childId = String(substituted.project_id || "");
+            const results: unknown[] = [];
+            for (const item of list) {
+              const childResult = await runChildWorkflow(childId, item, currentEnv);
+              if ("ok" in childResult && childResult.ok) {
+                const outs = childResult.outputs as Record<string, unknown>;
+                const firstKey = Object.keys(outs)[0];
+                results.push(firstKey !== undefined ? outs[firstKey] : null);
+              } else {
+                results.push(null);
+              }
+            }
+            result = { ok: true, outputs: { results } };
+          }
+        } else {
+          result = await runPythonModule({ id: node.moduleId, inputs, params: substituted, letters, env: currentEnv });
+        }
+
+        // Handle __env__ writes (env-set module)
+        let cleaned = result;
+        if ("ok" in result && result.ok) {
+          const outs = (result as any).outputs as Record<string, unknown>;
+          const writes = outs.__env__;
+          if (writes && typeof writes === "object" && !Array.isArray(writes)) {
+            const newEnv = { ...currentEnv };
+            for (const [k, v] of Object.entries(writes as Record<string, unknown>)) {
+              newEnv[k] = stringifyValue(v);
+            }
+            await saveEnv(newEnv);
+            currentEnv = newEnv;
+            broadcast("envChanged", { changed: Object.keys(writes) });
+            // Trigger env-watch nodes in the current project
+            for (const wn of nodes) {
+              if (wn.moduleId !== "env-watch") continue;
+              const watched = String(wn.params.var ?? "");
+              if (!watched || !(watched in (writes as Record<string, unknown>))) continue;
+              const watchLeaves = downstreamLeaves(wn.id, edges);
+              for (const leafId of watchLeaves) {
+                if (!cache.has(leafId)) exec(leafId);
+              }
+            }
+            const { __env__: _drop, ...rest } = outs;
+            cleaned = { ok: true, outputs: rest };
+          }
+        }
+
+        const durationMs = Date.now() - startedAt;
+        broadcast("nodeResult", { projectId, nodeId, result: cleaned, durationMs, moduleId: node.moduleId });
+
+        const ok = "ok" in cleaned ? (cleaned as any).ok : false;
+        appendHistory({
+          timestamp: startedAt,
+          projectId,
+          nodeId,
+          moduleId: node.moduleId,
+          durationMs,
+          ok,
+          error: "ok" in cleaned && !(cleaned as any).ok ? (cleaned as any).error : undefined,
+          outputs: "ok" in cleaned && (cleaned as any).ok ? (cleaned as any).outputs : undefined,
+        }).catch(() => {});
+
+        return cleaned;
+      } catch (err: any) {
+        const durationMs = Date.now() - startedAt;
+        const r: RunResult = { ok: false, error: err.message };
+        broadcast("nodeResult", { projectId, nodeId, result: r, durationMs, moduleId: node.moduleId });
+        appendHistory({ timestamp: Date.now(), projectId, nodeId, moduleId: node.moduleId, durationMs, ok: false, error: err.message }).catch(() => {});
+        return r;
+      }
+    })();
+    cache.set(nodeId, p);
+    return p;
+  };
+
+  if (mode === "trigger") {
+    const leaves = downstreamLeaves(triggerNodeId, edges);
+    const results = await Promise.all(leaves.map((id) => exec(id)));
+    return results[results.length - 1] ?? { skipped: true };
+  } else {
+    return exec(triggerNodeId);
+  }
+}
+
 // ---------- event bus (SSE) ----------
 
-type EventName = "modulesChanged" | "cronTick" | "webhookFired" | "mcpChanged";
+type EventName = "modulesChanged" | "cronTick" | "webhookFired" | "mcpChanged" | "nodeRunning" | "nodeResult" | "envChanged";
 
 const eventClients = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const sseEncoder = new TextEncoder();
@@ -457,22 +870,31 @@ function attachModuleWatcher(): void {
 
 // ---------- cron ----------
 
-const cronTimers = new Map<string, ReturnType<typeof setInterval>>();
+interface CronEntry { timer: ReturnType<typeof setInterval>; projectId: string | null; }
+const cronEntries = new Map<string, CronEntry>();
 
-function cronRegister(id: string, intervalMs: number): void {
+function cronRegister(id: string, intervalMs: number, projectId?: string | null): void {
   cronUnregister(id);
   if (!intervalMs || intervalMs < 100) return;
-  cronTimers.set(id, setInterval(() => broadcast("cronTick", { id }), intervalMs));
+  const timer = setInterval(() => {
+    broadcast("cronTick", { id });
+    if (projectId) {
+      runWorkflow(projectId, id, "trigger").catch((e) =>
+        console.error(`[n2n] cron workflow error (${id}):`, e?.message),
+      );
+    }
+  }, intervalMs);
+  cronEntries.set(id, { timer, projectId: projectId ?? null });
 }
 
 function cronUnregister(id: string): void {
-  const h = cronTimers.get(id);
-  if (h) { clearInterval(h); cronTimers.delete(id); }
+  const entry = cronEntries.get(id);
+  if (entry) { clearInterval(entry.timer); cronEntries.delete(id); }
 }
 
 function cronUnregisterAll(): void {
-  for (const h of cronTimers.values()) clearInterval(h);
-  cronTimers.clear();
+  for (const entry of cronEntries.values()) clearInterval(entry.timer);
+  cronEntries.clear();
 }
 
 // ---------- webhooks ----------
@@ -532,10 +954,19 @@ async function handleWebhook(req: Request, route: string): Promise<Response> {
     if (key) respHeaders[key] = val;
   }
 
-  // Fire trigger AFTER scheduling response, before returning, but don't block.
-  queueMicrotask(() => broadcast("webhookFired", {
-    nodeId: target.nodeId, path: route, data: requestData,
-  }));
+  // Store request data so the orchestration engine can access it.
+  webhookNodeData.set(target.nodeId, requestData);
+
+  // Fire trigger and run the workflow (non-blocking).
+  queueMicrotask(() => {
+    broadcast("webhookFired", { nodeId: target.nodeId, path: route, data: requestData });
+    const projectId = webhookNodeProjectId.get(target.nodeId);
+    if (projectId) {
+      runWorkflow(projectId, target.nodeId, "trigger").catch((e) =>
+        console.error(`[n2n] webhook workflow error (${target.nodeId}):`, e?.message),
+      );
+    }
+  });
 
   return new Response(responseBody, { status, headers: respHeaders });
 }
@@ -1007,6 +1438,10 @@ const ROUTES: RouteMatch[] = [
     return json(await renameProject(p.id, name));
   }),
   route("POST", "/api/projects/:id/duplicate", async (_r, p) => json(await duplicateProject(p.id))),
+  route("POST", "/api/projects/:id/run/:nodeId", async (_r, p) => {
+    const result = await runWorkflow(p.id, p.nodeId, "manual");
+    return json(result);
+  }),
   route("GET", "/api/projects/:id/export", async (_r, p) => {
     const project = await loadProject(p.id);
     const safeName = String(project.name || "project").replace(/[^a-z0-9._-]+/gi, "_");
@@ -1021,8 +1456,8 @@ const ROUTES: RouteMatch[] = [
 
   // Cron
   route("POST", "/api/cron/register", async (req) => {
-    const { id, intervalMs } = await readJson<{ id: string; intervalMs: number }>(req);
-    cronRegister(id, intervalMs);
+    const { id, intervalMs, projectId } = await readJson<{ id: string; intervalMs: number; projectId?: string }>(req);
+    cronRegister(id, intervalMs, projectId);
     return json({ ok: true });
   }),
   route("POST", "/api/cron/unregister", async (req) => {
@@ -1034,16 +1469,24 @@ const ROUTES: RouteMatch[] = [
 
   // Webhooks (registry)
   route("POST", "/api/webhooks/register", async (req) => {
-    const { nodeId, path, response } = await readJson<{ nodeId: string; path: string; response?: any }>(req);
+    const { nodeId, path, response, projectId } = await readJson<{ nodeId: string; path: string; response?: any; projectId?: string }>(req);
     if (path) webhookRoutes.set(path, { nodeId, response: response || null });
+    if (projectId) webhookNodeProjectId.set(nodeId, projectId);
     return json({ ok: true });
   }),
   route("POST", "/api/webhooks/unregister", async (req) => {
     const { nodeId } = await readJson<{ nodeId: string }>(req);
     for (const [k, v] of webhookRoutes) if (v.nodeId === nodeId) webhookRoutes.delete(k);
+    webhookNodeProjectId.delete(nodeId);
+    webhookNodeData.delete(nodeId);
     return json({ ok: true });
   }),
-  route("POST", "/api/webhooks/unregisterAll", async () => { webhookRoutes.clear(); return json({ ok: true }); }),
+  route("POST", "/api/webhooks/unregisterAll", async () => {
+    webhookRoutes.clear();
+    webhookNodeProjectId.clear();
+    webhookNodeData.clear();
+    return json({ ok: true });
+  }),
   route("GET", "/api/webhooks/port", async () => json({ port: WEBHOOK_PORT ?? API_PORT })),
 
   // MCP
