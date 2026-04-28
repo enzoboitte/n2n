@@ -10,8 +10,10 @@ import { McpModal } from "@/components/ui/McpModal";
 import { ModulePalette } from "@/components/ui/ModulePalette";
 import { ProjectMenu } from "@/components/ui/ProjectMenu";
 import { PromptModal } from "@/components/ui/PromptModal";
+import { SettingsModal } from "@/components/ui/SettingsModal";
 import { StatusBar } from "@/components/ui/StatusBar";
 import { Toolbar } from "@/components/ui/Toolbar";
+import { getApiBase, pingServer } from "@/lib/n2n";
 import { EnvContext } from "@/contexts/EnvContext";
 import { McpContext } from "@/contexts/McpContext";
 import { ProjectsContext } from "@/contexts/ProjectsContext";
@@ -171,6 +173,26 @@ export default function Home() {
   const [configuringId, setConfiguringId] = useState<string | null>(null);
   const [envOpen, setEnvOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
+  // null = closed, "user" = user clicked the gear, "required" = first-run /
+  // server unreachable (modal cannot be dismissed until configured).
+  const [settingsMode, setSettingsMode] = useState<null | "user" | "required">(null);
+
+  // Boot probe: ping the configured server and force the settings modal open
+  // if it cannot be reached. We only do this once on mount, not when the user
+  // already has a working config.
+  useEffect(() => {
+    let cancelled = false;
+    if (typeof window === "undefined") return;
+    if (window.n2n) return; // Electron bridge: no remote server, skip probe.
+    (async () => {
+      try {
+        await pingServer(getApiBase(), AbortSignal.timeout(2000));
+      } catch {
+        if (!cancelled) setSettingsMode("required");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
   const [chatOpen, setChatOpen] = useState(false);
   const [context, setContext] = useState<ContextState | null>(null);
 
@@ -1197,6 +1219,7 @@ export default function Home() {
           onZoomOut={zoomOut}
           onReset={reset}
           onAutoLayout={runAutoLayout}
+          onOpenSettings={() => setSettingsMode("user")}
           projectSlot={
             <ProjectMenu
               projects={projects}
@@ -1301,6 +1324,12 @@ export default function Home() {
           />
         )}
         {mcpOpen && <McpModal onClose={() => setMcpOpen(false)} />}
+        {settingsMode && (
+          <SettingsModal
+            required={settingsMode === "required"}
+            onClose={() => setSettingsMode(null)}
+          />
+        )}
         {context && (
           <ContextMenu
             x={context.x}
