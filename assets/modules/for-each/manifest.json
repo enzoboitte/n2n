@@ -1,19 +1,107 @@
 {
   "id": "for-each",
   "name": "Pour chaque",
-  "description": "Itère sur une liste et exécute un sous-projet pour chaque item. Chaque item est passé via la var d'env __input__. Renvoie la liste des résultats. Géré par le runtime.",
-  "version": "0.1.0",
+  "description": "Itère sur une entrée (liste, dict, string, nombre…) et exécute pour chaque item soit rien (mode item = transformateur d'itérable), soit un sous-projet, soit un appel MCP, soit une requête HTTP, soit une requête SQL. Tous les modes supportent {item} (l'élément courant) et {i} (l'index). Renvoie la liste des résultats.",
+  "version": "0.5.2",
   "color": "#8b5cf6",
   "entry": "module.py",
   "configurable": true,
-  "inputs": [{ "name": "list", "label": "Liste", "type": "any" }],
+  "inputs": [{ "name": "list", "label": "Liste / dict / string / nombre", "type": "any" }],
   "outputs": [{ "name": "results", "label": "Résultats", "type": "any" }],
   "params": [
+    {
+      "name": "iter",
+      "label": "Stratégie d'itération",
+      "type": "select",
+      "options": ["auto", "list", "entries", "keys", "values", "lines", "chars", "range"],
+      "default": "auto"
+    },
+    {
+      "name": "mode",
+      "label": "Mode (action par item)",
+      "type": "select",
+      "options": ["item", "subproject", "mcp", "http", "sql"],
+      "default": "item"
+    },
     {
       "name": "project_id",
       "label": "Projet enfant",
       "type": "project-id",
-      "default": ""
+      "default": "",
+      "showIf": { "mode": "subproject" }
+    },
+    {
+      "name": "mcp_target",
+      "label": "Outil MCP",
+      "type": "mcp-target",
+      "default": "",
+      "showIf": { "mode": "mcp" }
+    },
+    {
+      "name": "mcp_arguments",
+      "label": "Arguments MCP (utilise {item}, {i})",
+      "type": "mcp-arguments",
+      "default": {},
+      "showIf": { "mode": "mcp" }
+    },
+    {
+      "name": "http_method",
+      "label": "Méthode HTTP",
+      "type": "select",
+      "options": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+      "default": "GET",
+      "showIf": { "mode": "http" }
+    },
+    {
+      "name": "http_url",
+      "label": "URL HTTP (supporte {item}, {i})",
+      "type": "string",
+      "default": "",
+      "showIf": { "mode": "http" }
+    },
+    {
+      "name": "http_body",
+      "label": "Body HTTP (JSON ou texte)",
+      "type": "text",
+      "default": "",
+      "showIf": { "mode": "http" }
+    },
+    {
+      "name": "http_content_type",
+      "label": "Content-Type body HTTP",
+      "type": "select",
+      "options": ["application/json", "application/x-www-form-urlencoded", "text/plain"],
+      "default": "application/json",
+      "showIf": { "mode": "http" }
+    },
+    {
+      "name": "sql_driver",
+      "label": "Pilote SQL",
+      "type": "select",
+      "options": ["sqlite", "duckdb", "postgres", "mysql", "mariadb", "mssql", "oracle"],
+      "default": "sqlite",
+      "showIf": { "mode": "sql" }
+    },
+    {
+      "name": "sql_connection",
+      "label": "Connection (path SQLite/DuckDB ou URL)",
+      "type": "string",
+      "default": ":memory:",
+      "showIf": { "mode": "sql" }
+    },
+    {
+      "name": "sql_query",
+      "label": "Requête SQL (supporte {item}, {i})",
+      "type": "text",
+      "default": "INSERT INTO logs (msg) VALUES (?)",
+      "showIf": { "mode": "sql" }
+    },
+    {
+      "name": "sql_parameters",
+      "label": "Paramètres positionnels (JSON, supporte {item})",
+      "type": "text",
+      "default": "[\"{item}\"]",
+      "showIf": { "mode": "sql" }
     }
   ]
 }

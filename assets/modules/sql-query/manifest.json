@@ -1,0 +1,149 @@
+{
+  "id": "sql-query",
+  "name": "SQL / BDD",
+  "description": "Exécute une requête sur SQLite, PostgreSQL, MySQL/MariaDB, MS SQL Server, Oracle, MongoDB, Redis ou DuckDB. SQLite/DuckDB : path sandboxé sous ~/.n2n/data/. Postgres/MySQL/MariaDB/MSSQL/Oracle : connection string. MongoDB : { collection, op, filter, doc } via le champ payload JSON. Redis : commande JSON [\"GET\", \"key\"]. Géré par le runtime.",
+  "version": "0.3.0",
+  "color": "#0891b2",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [
+    { "name": "params", "label": "Paramètres positionnels (array)", "type": "any" }
+  ],
+  "outputs": [
+    { "name": "rows", "label": "Lignes / réponse", "type": "any" },
+    { "name": "affected", "label": "Lignes affectées", "type": "number" },
+    { "name": "lastInsertRowid", "label": "Last insert ID", "type": "number" }
+  ],
+  "params": [
+    {
+      "name": "driver",
+      "label": "Pilote",
+      "type": "select",
+      "options": [
+        "sqlite",
+        "duckdb",
+        "postgres",
+        "mysql",
+        "mariadb",
+        "mssql",
+        "oracle",
+        "mongodb",
+        "redis"
+      ],
+      "default": "sqlite"
+    },
+    {
+      "name": "connection",
+      "label": "Chemin SQLite (relatif → ~/.n2n/data/) ou :memory:",
+      "type": "string",
+      "default": ":memory:",
+      "showIf": { "driver": "sqlite" }
+    },
+    {
+      "name": "connection_duckdb",
+      "label": "Chemin DuckDB (relatif → ~/.n2n/data/) ou :memory:",
+      "type": "string",
+      "default": ":memory:",
+      "showIf": { "driver": "duckdb" }
+    },
+    {
+      "name": "connection_pg",
+      "label": "URL PostgreSQL",
+      "type": "string",
+      "default": "postgres://user:pass@localhost:5432/db",
+      "showIf": { "driver": "postgres" }
+    },
+    {
+      "name": "connection_mysql",
+      "label": "URL MySQL",
+      "type": "string",
+      "default": "mysql://user:pass@localhost:3306/db",
+      "showIf": { "driver": "mysql" }
+    },
+    {
+      "name": "connection_mariadb",
+      "label": "URL MariaDB",
+      "type": "string",
+      "default": "mysql://user:pass@localhost:3306/db",
+      "showIf": { "driver": "mariadb" }
+    },
+    {
+      "name": "connection_mssql",
+      "label": "Server[\\Instance] ou URL JDBC-like",
+      "type": "string",
+      "default": "Server=localhost;Database=master;User Id=sa;Password=…;Encrypt=true;TrustServerCertificate=true",
+      "showIf": { "driver": "mssql" }
+    },
+    {
+      "name": "connection_oracle",
+      "label": "Oracle (user/pass@host:port/service ou oracle://user:pass@host:port/service)",
+      "type": "string",
+      "default": "user/password@localhost:1521/XE",
+      "showIf": { "driver": "oracle" }
+    },
+    {
+      "name": "connection_mongo",
+      "label": "URI MongoDB",
+      "type": "string",
+      "default": "mongodb://user:pass@localhost:27017/db",
+      "showIf": { "driver": "mongodb" }
+    },
+    {
+      "name": "connection_redis",
+      "label": "URL Redis",
+      "type": "string",
+      "default": "redis://localhost:6379",
+      "showIf": { "driver": "redis" }
+    },
+    {
+      "name": "query",
+      "label": "Requête SQL (placeholder ? pour SQLite/DuckDB/MySQL/MariaDB/MSSQL ; $1… pour Postgres)",
+      "type": "text",
+      "default": "SELECT 1 AS one",
+      "showIf": { "driver": ["sqlite", "duckdb", "postgres", "mysql", "mariadb", "mssql", "oracle"] }
+    },
+    {
+      "name": "mongo_op",
+      "label": "Opération Mongo",
+      "type": "select",
+      "options": ["find", "findOne", "insertOne", "insertMany", "updateOne", "updateMany", "deleteOne", "deleteMany", "aggregate", "countDocuments"],
+      "default": "find",
+      "showIf": { "driver": "mongodb" }
+    },
+    {
+      "name": "mongo_collection",
+      "label": "Collection",
+      "type": "string",
+      "default": "",
+      "showIf": { "driver": "mongodb" }
+    },
+    {
+      "name": "mongo_payload",
+      "label": "Payload JSON ({ filter, doc, update, pipeline, … })",
+      "type": "text",
+      "default": "{\"filter\": {}}",
+      "showIf": { "driver": "mongodb" }
+    },
+    {
+      "name": "redis_command",
+      "label": "Commande Redis (JSON array, ex. [\"GET\",\"foo\"] ou [\"SET\",\"foo\",\"bar\"])",
+      "type": "text",
+      "default": "[\"PING\"]",
+      "showIf": { "driver": "redis" }
+    },
+    {
+      "name": "parameters",
+      "label": "Paramètres positionnels (JSON array, ex. [\"alice\", 42])",
+      "type": "text",
+      "default": "[]",
+      "showIf": { "driver": ["sqlite", "duckdb", "postgres", "mysql", "mariadb", "mssql", "oracle"] }
+    },
+    {
+      "name": "create_dirs",
+      "label": "Créer le dossier si absent",
+      "type": "boolean",
+      "default": true,
+      "showIf": { "driver": ["sqlite", "duckdb"] }
+    }
+  ]
+}

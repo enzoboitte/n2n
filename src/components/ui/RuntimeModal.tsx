@@ -39,7 +39,7 @@ export function RuntimeModal({ onClose }: Props) {
     };
   }, []);
 
-  const install = async (id: "node" | "python") => {
+  const install = async (id: string) => {
     const api = getApi();
     if (!api) return;
     try {

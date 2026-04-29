@@ -32,20 +32,49 @@ export type McpToolSpec = {
   inputSchema: Record<string, unknown>;
 };
 
+export type McpPendingAuth = {
+  authUrl: string;
+  localPort: number | null;
+};
+
+export type McpConfigFile = {
+  path: string;
+  description?: string;
+  format?: "json" | "text";
+};
+
+export type McpOAuthSpec = {
+  provider: "google";
+  clientSecretFile: string;
+  tokensPath: string;
+  scopes: string[];
+  redirectUri?: string;
+};
+
 export type McpServerState = {
   name: string;
   command: string;
   args: string[];
   env: Record<string, string>;
+  authArgs?: string[];
+  configFiles?: McpConfigFile[];
+  oauth?: McpOAuthSpec | null;
   connected: boolean;
   error: string | null;
   tools: McpToolSpec[];
+  pendingAuth?: McpPendingAuth | null;
+  authRunning?: boolean;
+  oauthCallbackPath?: string;
+  logs?: string;
 };
 
 export type McpServerConfig = {
   command: string;
   args: string[];
   env: Record<string, string>;
+  authArgs?: string[];
+  configFiles?: McpConfigFile[];
+  oauth?: McpOAuthSpec;
 };
 
 export type McpCallResult = {
@@ -55,7 +84,8 @@ export type McpCallResult = {
 };
 
 export type RuntimeStatus = {
-  id: "node" | "python";
+  /** "node", "python", or "npm-<pkg>" for dynamically-installed npm drivers. */
+  id: string;
   label: string;
   description: string;
   installed: boolean;
@@ -186,6 +216,26 @@ type N2nApi = {
   mcpSave: (name: string, config: McpServerConfig) => Promise<{ ok: true }>;
   mcpDelete: (name: string) => Promise<void>;
   mcpRestart: (name: string) => Promise<void>;
+  mcpAuth: (name: string) => Promise<void>;
+  mcpDismissAuth: (name: string) => Promise<void>;
+  mcpProbeOAuth: (name: string, tool?: string) => Promise<void>;
+  mcpWriteConfigFile: (
+    name: string,
+    path: string,
+    content: string,
+  ) => Promise<{ ok: true; path: string }>;
+  mcpOAuthStart: (
+    name: string,
+    overrides?: { redirectUri?: string },
+  ) => Promise<{
+    sessionId: string;
+    authUrl: string;
+    redirectUri: string;
+  }>;
+  mcpOAuthComplete: (
+    name: string,
+    args: { sessionId: string; code?: string; callbackUrl?: string },
+  ) => Promise<{ tokensPath: string }>;
   mcpCallTool: (
     server: string,
     tool: string,
@@ -193,13 +243,28 @@ type N2nApi = {
   ) => Promise<McpCallResult>;
   onMcpChanged: (callback: () => void) => () => void;
   runtimesList: () => Promise<RuntimeStatus[]>;
-  runtimesInstall: (id: "node" | "python") => Promise<void>;
+  runtimesInstall: (id: string) => Promise<void>;
   onRuntimesChanged: (callback: () => void) => () => void;
+};
+
+export type OAuthBridge = {
+  start: (opts: {
+    port: number;
+    serverName: string;
+    apiBase: string;
+    token?: string | null;
+  }) => Promise<{ ok: true; port: number }>;
+  stop: (port: number) => Promise<{ ok: true; stopped: boolean }>;
+  list: () => Promise<{ port: number; serverName: string; apiBase: string }[]>;
 };
 
 declare global {
   interface Window {
     n2n?: N2nApi;
+    n2nElectron?: {
+      oauthBridge: OAuthBridge;
+      openExternal: (url: string) => Promise<{ ok: true }>;
+    };
   }
 }
 
@@ -742,6 +807,33 @@ const api: N2nApi = {
   mcpRestart: async (name) => {
     await http("POST", `/api/mcp/${encodeURIComponent(name)}/restart`);
   },
+  mcpAuth: async (name) => {
+    await http("POST", `/api/mcp/${encodeURIComponent(name)}/auth-flow`);
+  },
+  mcpDismissAuth: async (name) => {
+    await http("POST", `/api/mcp/${encodeURIComponent(name)}/dismiss-auth`);
+  },
+  mcpProbeOAuth: async (name, tool) => {
+    await http(
+      "POST",
+      `/api/mcp/${encodeURIComponent(name)}/probe-oauth`,
+      tool ? { tool } : {},
+    );
+  },
+  mcpWriteConfigFile: (name, path, content) =>
+    http(
+      "POST",
+      `/api/mcp/${encodeURIComponent(name)}/config-file`,
+      { path, content },
+    ),
+  mcpOAuthStart: (name, overrides) =>
+    http(
+      "POST",
+      `/api/mcp/${encodeURIComponent(name)}/oauth/start`,
+      overrides ?? {},
+    ),
+  mcpOAuthComplete: (name, args) =>
+    http("POST", `/api/mcp/${encodeURIComponent(name)}/oauth/complete`, args),
   mcpCallTool: (server, tool, args) =>
     http("POST", "/api/mcp/call", { server, tool, args }),
   onMcpChanged: (cb) => subscribe("mcpChanged", cb),

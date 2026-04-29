@@ -1,0 +1,164 @@
+{
+  "id": "b1d59c36-6c89-4981-9294-535f016125b3",
+  "name": "Gmail — derniers mails toutes les 30 s",
+  "createdAt": 1777400000000,
+  "updatedAt": 1777467800000,
+  "nodes": [
+    {
+      "id": "n1",
+      "moduleId": "cron-tick",
+      "x": -200,
+      "y": 0,
+      "width": 96,
+      "height": 96,
+      "params": { "interval": "30s" },
+      "result": null
+    },
+    {
+      "id": "n2",
+      "moduleId": "mcp-tool",
+      "x": 0,
+      "y": 0,
+      "width": 96,
+      "height": 96,
+      "params": {
+        "target": "gmail::search_emails",
+        "arguments": {
+          "query": "in:inbox",
+          "maxResults": 10
+        }
+      },
+      "result": null
+    },
+    {
+      "id": "n3",
+      "moduleId": "regex-extract",
+      "x": 220,
+      "y": -220,
+      "width": 96,
+      "height": 96,
+      "params": {
+        "pattern": "Subject:\\s*([^\\n\\r]+)",
+        "flags": "i"
+      },
+      "result": null
+    },
+    {
+      "id": "n4",
+      "moduleId": "log",
+      "x": 460,
+      "y": -220,
+      "width": 96,
+      "height": 96,
+      "params": { "label": "📌 Sujets matchés (regex)" },
+      "result": null
+    },
+    {
+      "id": "n5",
+      "moduleId": "regex-extract",
+      "x": 220,
+      "y": 200,
+      "width": 96,
+      "height": 96,
+      "params": {
+        "pattern": "From:[^<]*<([^>]+)>",
+        "flags": "i"
+      },
+      "result": null
+    },
+    {
+      "id": "n6",
+      "moduleId": "list-filter",
+      "x": 460,
+      "y": 80,
+      "width": 96,
+      "height": 96,
+      "params": {
+        "expression": "len([d for d in ['boss@', 'patron@', '@banque-populaire.fr', '@cic.fr', '@stripe.com', '@github.com', 'urgent', 'rh@'] if d in str(item or '').lower()]) > 0"
+      },
+      "result": null
+    },
+    {
+      "id": "n7",
+      "moduleId": "log",
+      "x": 700,
+      "y": 80,
+      "width": 96,
+      "height": 96,
+      "params": { "label": "🚨 IMPORTANTS — expéditeurs prioritaires" },
+      "result": null
+    },
+    {
+      "id": "n8",
+      "moduleId": "list-filter",
+      "x": 460,
+      "y": 320,
+      "width": 96,
+      "height": 96,
+      "params": {
+        "expression": "len([d for d in ['boss@', 'patron@', '@banque-populaire.fr', '@cic.fr', '@stripe.com', '@github.com', 'urgent', 'rh@'] if d in str(item or '').lower()]) == 0"
+      },
+      "result": null
+    },
+    {
+      "id": "n9",
+      "moduleId": "log",
+      "x": 700,
+      "y": 320,
+      "width": 96,
+      "height": 96,
+      "params": { "label": "📭 Pas importants" },
+      "result": null
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "n1",
+      "sourceSocket": "iso",
+      "target": "n2"
+    },
+    {
+      "id": "e2",
+      "source": "n2",
+      "sourceSocket": "text",
+      "target": "n3"
+    },
+    {
+      "id": "e3",
+      "source": "n3",
+      "sourceSocket": "all",
+      "target": "n4"
+    },
+    {
+      "id": "e4",
+      "source": "n2",
+      "sourceSocket": "text",
+      "target": "n5"
+    },
+    {
+      "id": "e5",
+      "source": "n5",
+      "sourceSocket": "all",
+      "target": "n6"
+    },
+    {
+      "id": "e6",
+      "source": "n6",
+      "sourceSocket": "list",
+      "target": "n7"
+    },
+    {
+      "id": "e7",
+      "source": "n5",
+      "sourceSocket": "all",
+      "target": "n8"
+    },
+    {
+      "id": "e8",
+      "source": "n8",
+      "sourceSocket": "list",
+      "target": "n9"
+    }
+  ]
+}

@@ -32,6 +32,7 @@ const HISTORY_PATH = join(N2N_DIR, "history.jsonl");
 const HISTORY_MAX_LINES = 5000;
 const MCP_SERVERS_PATH = join(N2N_DIR, "mcp-servers.json");
 const RUNTIMES_DIR = join(N2N_DIR, "runtimes");
+const DATA_DIR = join(N2N_DIR, "data");
 const BUNDLED_MODULES_DIR = join(import.meta.dir, "..", "assets", "modules");
 const PYTHON = process.env.N2N_PYTHON || "python3";
 const LLAMA_URL = process.env.N2N_LLAMA_URL || "http://localhost:8080/v1/chat/completions";
@@ -523,7 +524,9 @@ function attachModuleWatcher(): void {
 // extend PATH with common install locations and offer a one-click installer
 // for users who don't have Node/Python yet.
 
-type RuntimeId = "node" | "python";
+// String so we can mix the bundled Node/Python runtimes with optional npm
+// driver packages (mysql2, oracledb, mongodb, …) under one runtime list.
+type RuntimeId = string;
 
 type RuntimeArch = "x64" | "arm64";
 type RuntimePlatform = "linux" | "darwin";
@@ -542,6 +545,10 @@ function detectRuntimePlatform(): { platform: RuntimePlatform; arch: RuntimeArch
 
 const N2N_NODE_DIR = join(RUNTIMES_DIR, "node");
 const N2N_PY_DIR = join(RUNTIMES_DIR, "python");
+// Where we install npm driver packages (mysql2, oracledb, mongodb, …)
+// invoked dynamically by sql-query. Kept separate from the user's global
+// node_modules so n2n can manage it via the Environnements panel.
+const N2N_NPM_DIR = join(N2N_DIR, "npm");
 
 let cachedExtPath: string | null = null;
 
@@ -698,6 +705,43 @@ async function detectPython(): Promise<RuntimeStatus["details"]> {
   return out;
 }
 
+/**
+ * Optional npm packages used dynamically by sql-query. Surfaced in the
+ * Environnements panel so the user can install them without SSH.
+ */
+const KNOWN_NPM_PKGS: Array<{
+  id: string;
+  pkg: string;
+  label: string;
+  description: string;
+}> = [
+  { id: "npm-mysql2", pkg: "mysql2", label: "MySQL / MariaDB",
+    description: "Driver Node pour MySQL et MariaDB (sql-query mysql/mariadb)." },
+  { id: "npm-mssql", pkg: "mssql", label: "Microsoft SQL Server",
+    description: "Driver MSSQL (sql-query mssql)." },
+  { id: "npm-oracledb", pkg: "oracledb", label: "Oracle DB",
+    description: "Driver Oracle Thin mode 6.0+ (sql-query oracle). Pas besoin d'Instant Client." },
+  { id: "npm-mongodb", pkg: "mongodb", label: "MongoDB",
+    description: "Driver Mongo (sql-query mongodb : find / insert / update / aggregate…)." },
+  { id: "npm-redis", pkg: "redis", label: "Redis",
+    description: "Client Redis (sql-query redis : commandes brutes JSON)." },
+  { id: "npm-duckdb", pkg: "@duckdb/node-api", label: "DuckDB",
+    description: "Base analytique in-process (sql-query duckdb)." },
+];
+
+async function detectNpmPkg(pkg: string): Promise<RuntimeStatus["details"]> {
+  // pkg can be "@scope/name" — split on / to walk into the right dir.
+  const parts = pkg.split("/").filter(Boolean);
+  const dir = join(N2N_NPM_DIR, "node_modules", ...parts);
+  const pkgJson = join(dir, "package.json");
+  try {
+    const meta = JSON.parse(await readFile(pkgJson, "utf8"));
+    return [{ name: pkg, path: dir, version: typeof meta.version === "string" ? meta.version : null }];
+  } catch {
+    return [{ name: pkg, path: null, version: null }];
+  }
+}
+
 async function listRuntimes(): Promise<RuntimeStatus[]> {
   const out: RuntimeStatus[] = [];
   const platform = detectRuntimePlatform();
@@ -705,8 +749,6 @@ async function listRuntimes(): Promise<RuntimeStatus[]> {
   for (const id of ["node", "python"] as RuntimeId[]) {
     const state = getInstallState(id);
     const details = id === "node" ? await detectNode() : await detectPython();
-    // Node is "installed" if both node + npx are findable.
-    // Python is "installed" if python3 is findable (uv/uvx are bonus).
     const installed = id === "node"
       ? details.every((d) => d.path)
       : details[0]?.path != null;
@@ -718,6 +760,24 @@ async function listRuntimes(): Promise<RuntimeStatus[]> {
         : "Required for python3 modules and uvx-based MCP servers (git, time, sqlite, …).",
       installed,
       installable: !!platform,
+      installing: state.installing,
+      error: state.error,
+      log: state.log,
+      details,
+    });
+  }
+
+  // npm driver packages — appended after the bundled runtimes so the UI
+  // groups them naturally below Node + Python.
+  for (const meta of KNOWN_NPM_PKGS) {
+    const state = getInstallState(meta.id);
+    const details = await detectNpmPkg(meta.pkg);
+    out.push({
+      id: meta.id,
+      label: meta.label,
+      description: meta.description,
+      installed: !!details[0]?.path,
+      installable: true,
       installing: state.installing,
       error: state.error,
       log: state.log,
@@ -807,6 +867,53 @@ async function installPython(): Promise<void> {
   appendInstallLog(id, `Python ${PY_VERSION} installé dans ${N2N_PY_DIR}`);
 }
 
+async function installNpmPkg(id: string): Promise<void> {
+  const meta = KNOWN_NPM_PKGS.find((p) => p.id === id);
+  if (!meta) throw new Error(`Package npm inconnu: ${id}`);
+  const path = await getExtendedPath();
+  const npm = await findInPath("npm", path);
+  if (!npm) {
+    throw new Error("npm introuvable. Installe d'abord Node.js dans cet onglet.");
+  }
+  await mkdir(N2N_NPM_DIR, { recursive: true });
+  // Bootstrap a tiny package.json so npm doesn't moan about the absent project.
+  const pj = join(N2N_NPM_DIR, "package.json");
+  if (!(await exists(pj))) {
+    await writeFile(pj, JSON.stringify(
+      { name: "n2n-runtime-deps", version: "1.0.0", private: true },
+      null,
+      2,
+    ));
+  }
+  appendInstallLog(id, `$ npm install ${meta.pkg}`);
+  const proc = spawn({
+    cmd: [npm, "install", meta.pkg, "--no-audit", "--no-fund", "--loglevel=warn"],
+    cwd: N2N_NPM_DIR,
+    env: { ...process.env, PATH: path } as Record<string, string>,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const drain = async (s: ReadableStream<Uint8Array>) => {
+    const reader = s.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        if (text.trim()) appendInstallLog(id, text.replace(/\n$/, ""));
+      }
+    } catch {}
+  };
+  void drain(proc.stdout);
+  void drain(proc.stderr);
+  const code = await proc.exited;
+  if (code !== 0) {
+    throw new Error(`npm install ${meta.pkg} a échoué (code ${code}). Vois le log ci-dessus.`);
+  }
+  appendInstallLog(id, `Installation OK : ${join(N2N_NPM_DIR, "node_modules", meta.pkg)}`);
+}
+
 async function startRuntimeInstall(id: RuntimeId): Promise<void> {
   const state = getInstallState(id);
   if (state.installing) return;
@@ -815,10 +922,13 @@ async function startRuntimeInstall(id: RuntimeId): Promise<void> {
   state.log = "";
   broadcast("runtimesChanged");
 
-  const run = id === "node" ? installNode : installPython;
+  const isNpm = id.startsWith("npm-");
   try {
     appendInstallLog(id, `Installation de ${id} démarrée`);
-    await run();
+    if (isNpm) await installNpmPkg(id);
+    else if (id === "node") await installNode();
+    else if (id === "python") await installPython();
+    else throw new Error(`Runtime inconnu: ${id}`);
     appendInstallLog(id, `Installation terminée`);
   } catch (e: any) {
     state.error = e?.message || String(e);
@@ -827,9 +937,9 @@ async function startRuntimeInstall(id: RuntimeId): Promise<void> {
     state.installing = false;
     invalidateExtendedPath();
     broadcast("runtimesChanged");
-    // Restart MCP servers automatically — chances are some of them depend on
-    // the runtime we just installed and were stuck on "spawn npx not found".
-    if (!state.error) {
+    // Restart MCP servers when a *core* runtime install succeeded — npm
+    // packages are loaded lazily by sql-query, no MCP restart needed.
+    if (!state.error && !isNpm) {
       startAllMcpServers().catch(() => undefined);
     }
   }
@@ -927,6 +1037,461 @@ type GraphEdge = {
   sourceSocket: string;
   target: string;
 };
+
+/**
+ * Normalize any value into a list of items so `for-each` works on more than
+ * just arrays. Strategy by `iter`:
+ *
+ *   - "auto"     → array as-is, dict → entries, string → lines, number → range,
+ *                  other → [value]
+ *   - "list"     → array as-is, anything else → [value] (force "list of one")
+ *   - "entries"  → dict / array of [k,v] pairs / array → [{key,value}, …]
+ *   - "keys"     → dict → keys; array → indices
+ *   - "values"   → dict → values; array → as-is
+ *   - "lines"    → string → split(/\r?\n/); array → as-is
+ *   - "chars"    → string → chars; array → as-is
+ *   - "range"    → number → 0..n-1; string-number → same; array → indices
+ *
+ * `null` / `undefined` → [].
+ */
+function normalizeIterable(value: unknown, iter: string): unknown[] {
+  if (value === null || value === undefined) return [];
+  if (iter === "list") {
+    return Array.isArray(value) ? value : [value];
+  }
+  if (Array.isArray(value)) {
+    if (iter === "keys") return value.map((_, i) => i);
+    if (iter === "entries") return value.map((v, i) => ({ key: i, value: v }));
+    return value;
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const m = iter === "auto" ? "entries" : iter;
+    if (m === "keys") return Object.keys(obj);
+    if (m === "values") return Object.values(obj);
+    return Object.entries(obj).map(([key, val]) => ({ key, value: val }));
+  }
+  if (typeof value === "string") {
+    const m = iter === "auto" ? "lines" : iter;
+    if (m === "chars") return Array.from(value);
+    if (m === "range") {
+      const n = Number(value);
+      if (Number.isFinite(n)) {
+        const c = Math.max(0, Math.floor(n));
+        return Array.from({ length: c }, (_, i) => i);
+      }
+      return [];
+    }
+    return value.split(/\r?\n/);
+  }
+  if (typeof value === "number") {
+    const m = iter === "auto" ? "range" : iter;
+    if (m === "range") {
+      const c = Math.max(0, Math.floor(value));
+      return Array.from({ length: c }, (_, i) => i);
+    }
+    return [value];
+  }
+  return [value];
+}
+
+// ---------- sql-query runtime ----------
+
+/**
+ * Resolve a SQLite path under the n2n data dir sandbox. Refuses absolute
+ * paths outside $HOME so a workflow can't, e.g., overwrite /etc/.
+ *
+ *   ":memory:"          → ":memory:"
+ *   "" or "/"           → ":memory:"
+ *   "foo.db"            → ~/.n2n/data/foo.db
+ *   "subdir/db.sqlite"  → ~/.n2n/data/subdir/db.sqlite
+ *   "~/foo/bar.db"      → ~/foo/bar.db (must stay under home)
+ *   "/abs/path.db"      → only allowed if under $HOME
+ */
+function resolveSqliteSandboxPath(input: string): string {
+  const cleaned = (input || "").trim();
+  if (!cleaned || cleaned === ":memory:") return ":memory:";
+  let target: string;
+  if (cleaned.startsWith("~/")) {
+    target = join(homedir(), cleaned.slice(2));
+  } else if (cleaned.startsWith("/")) {
+    target = resolve(cleaned);
+  } else {
+    target = join(DATA_DIR, cleaned);
+  }
+  const resolved = resolve(target);
+  const homeReal = resolve(homedir());
+  if (resolved !== homeReal && !resolved.startsWith(homeReal + sep)) {
+    throw new Error(`Chemin SQLite hors de $HOME refusé: ${input}`);
+  }
+  return resolved;
+}
+
+async function runSqlQuery(
+  substituted: Record<string, unknown>,
+  inputs: Record<string, unknown>,
+): Promise<RunResult> {
+  const driver = String(substituted.driver || "sqlite");
+  const queryRaw = String(substituted.query || "").trim();
+  if (!queryRaw) return { ok: false, error: "sql-query: requête vide" };
+
+  // Parameters: prefer the input socket if it's an array, fall back to the
+  // text-encoded JSON array param.
+  let qparams: unknown[] = [];
+  if (Array.isArray(inputs.params)) {
+    qparams = inputs.params as unknown[];
+  } else {
+    const raw = String(substituted.parameters || "").trim();
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) qparams = parsed;
+        else return { ok: false, error: "sql-query: parameters doit être un array JSON" };
+      } catch (e: any) {
+        return { ok: false, error: `sql-query: parameters invalide: ${e?.message || e}` };
+      }
+    }
+  }
+
+  if (driver === "sqlite") {
+    let dbPath: string;
+    try { dbPath = resolveSqliteSandboxPath(String(substituted.connection || ":memory:")); }
+    catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
+    const createDirs = substituted.create_dirs !== false;
+    if (dbPath !== ":memory:" && createDirs) {
+      try { await mkdir(dirname(dbPath), { recursive: true }); } catch {}
+    }
+    let mod: any;
+    try { mod = await import("bun:sqlite"); }
+    catch (e: any) {
+      return { ok: false, error: `sqlite: bun:sqlite indisponible (${e?.message || e})` };
+    }
+    let db: any;
+    try { db = new mod.Database(dbPath); }
+    catch (e: any) { return { ok: false, error: `sqlite: open ${dbPath} → ${e?.message || e}` }; }
+    try {
+      const stmt = db.query(queryRaw);
+      // Heuristic: SELECT/PRAGMA/WITH return rows; everything else mutates.
+      const isRead = /^\s*(?:select|pragma|with|explain)\b/i.test(queryRaw);
+      if (isRead) {
+        const rows = stmt.all(...qparams);
+        return { ok: true, outputs: { rows, affected: 0, lastInsertRowid: 0 } };
+      } else {
+        const info = stmt.run(...qparams);
+        return {
+          ok: true,
+          outputs: {
+            rows: [],
+            affected: Number(info?.changes ?? db.totalChanges ?? 0),
+            lastInsertRowid: Number(info?.lastInsertRowid ?? 0),
+          },
+        };
+      }
+    } catch (e: any) {
+      return { ok: false, error: `sqlite: ${e?.message || e}` };
+    } finally {
+      try { db.close(); } catch {}
+    }
+  }
+
+  if (driver === "postgres") {
+    const url = String(substituted.connection_pg || substituted.connection || "").trim();
+    if (!url) return { ok: false, error: "postgres: URL requise" };
+    try {
+      // Bun.sql for tagged templates; .unsafe() for arbitrary parameterised SQL.
+      const sql = (Bun as any).sql ? (Bun as any).sql(url) : null;
+      if (!sql) return { ok: false, error: "postgres: Bun.sql indisponible (Bun >= 1.2 requis)" };
+      const rowsAny: any = await sql.unsafe(queryRaw, qparams);
+      const rows = Array.isArray(rowsAny) ? rowsAny : [];
+      const isRead = /^\s*(?:select|with|explain|show)\b/i.test(queryRaw);
+      try { await sql.end?.(); } catch {}
+      return {
+        ok: true,
+        outputs: {
+          rows: isRead ? rows : [],
+          affected: isRead ? 0 : (Number((rowsAny as any)?.count ?? rows.length ?? 0)),
+          lastInsertRowid: 0,
+        },
+      };
+    } catch (e: any) {
+      return { ok: false, error: `postgres: ${e?.message || e}` };
+    }
+  }
+
+  if (driver === "mysql" || driver === "mariadb") {
+    const url = String(
+      (driver === "mariadb" ? substituted.connection_mariadb : substituted.connection_mysql) ||
+      substituted.connection ||
+      "",
+    ).trim();
+    if (!url) return { ok: false, error: `${driver}: URL requise` };
+    try {
+      // mysql2 also speaks MariaDB wire protocol — same client.
+      const mysql2: any = await loadOptionalPkg("mysql2/promise");
+      if (!mysql2) {
+        return {
+          ok: false,
+          error: `${driver}: dépendance 'mysql2' non installée (npm i mysql2).`,
+        };
+      }
+      const conn = await mysql2.createConnection(url);
+      try {
+        const [rowsRaw, fields] = await conn.execute(queryRaw, qparams);
+        void fields;
+        const rows = Array.isArray(rowsRaw) ? rowsRaw : [];
+        const affected = Number((rowsRaw as any)?.affectedRows ?? 0);
+        const lastInsertRowid = Number((rowsRaw as any)?.insertId ?? 0);
+        return { ok: true, outputs: { rows, affected, lastInsertRowid } };
+      } finally {
+        try { await conn.end(); } catch {}
+      }
+    } catch (e: any) {
+      return { ok: false, error: `${driver}: ${e?.message || e}` };
+    }
+  }
+
+  if (driver === "mssql") {
+    const cs = String(substituted.connection_mssql || substituted.connection || "").trim();
+    if (!cs) return { ok: false, error: "mssql: connection string requise" };
+    try {
+      const mssql: any = await loadOptionalPkg("mssql");
+      if (!mssql) {
+        return { ok: false, error: "mssql: dépendance 'mssql' non installée (npm i mssql)." };
+      }
+      const pool = await mssql.connect(cs);
+      try {
+        const req = pool.request();
+        let q = queryRaw;
+        let i = 0;
+        q = q.replace(/\?/g, () => `@p${i++}`);
+        qparams.forEach((p, idx) => req.input(`p${idx}`, p as any));
+        const out = await req.query(q);
+        const rows = out.recordset || [];
+        const affected = Array.isArray(out.rowsAffected)
+          ? out.rowsAffected.reduce((a: number, b: number) => a + b, 0)
+          : Number(out.rowsAffected ?? 0);
+        return { ok: true, outputs: { rows, affected, lastInsertRowid: 0 } };
+      } finally {
+        try { await pool.close(); } catch {}
+      }
+    } catch (e: any) {
+      return { ok: false, error: `mssql: ${e?.message || e}` };
+    }
+  }
+
+  if (driver === "duckdb") {
+    let dbPath: string;
+    try { dbPath = resolveSqliteSandboxPath(String(substituted.connection_duckdb || ":memory:")); }
+    catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
+    if (dbPath !== ":memory:" && substituted.create_dirs !== false) {
+      try { await mkdir(dirname(dbPath), { recursive: true }); } catch {}
+    }
+    try {
+      const duck: any = await loadOptionalPkg("@duckdb/node-api");
+      if (!duck) {
+        return {
+          ok: false,
+          error: "duckdb: dépendance '@duckdb/node-api' non installée (npm i @duckdb/node-api).",
+        };
+      }
+      const inst = await duck.DuckDBInstance.create(dbPath === ":memory:" ? ":memory:" : dbPath);
+      const conn = await inst.connect();
+      try {
+        const reader = await conn.runAndReadAll(queryRaw, qparams);
+        const rows = reader.getRowObjects();
+        const isRead = /^\s*(?:select|with|pragma|describe|show)\b/i.test(queryRaw);
+        return {
+          ok: true,
+          outputs: {
+            rows: isRead ? rows : [],
+            affected: isRead ? 0 : Number(rows?.length ?? 0),
+            lastInsertRowid: 0,
+          },
+        };
+      } finally {
+        try { conn.disconnectSync?.(); } catch {}
+      }
+    } catch (e: any) {
+      return { ok: false, error: `duckdb: ${e?.message || e}` };
+    }
+  }
+
+  if (driver === "oracle") {
+    const cs = String(substituted.connection_oracle || substituted.connection || "").trim();
+    if (!cs) return { ok: false, error: "oracle: connection string requise" };
+    try {
+      const oracledb: any = await loadOptionalPkg("oracledb");
+      if (!oracledb) {
+        return {
+          ok: false,
+          error: "oracle: dépendance 'oracledb' non installée (npm i oracledb).",
+        };
+      }
+      // Parse user/pass out of either oracle://user:pass@host:port/svc
+      // or the legacy user/pass@host:port/svc TNS-shorthand. Else assume
+      // the user provided a pre-built connectString and external auth.
+      let user = "";
+      let password = "";
+      let connectString = cs;
+      const urlMatch = cs.match(/^oracle(?:db)?:\/\/([^:]+):([^@]+)@(.+)$/i);
+      if (urlMatch) {
+        user = decodeURIComponent(urlMatch[1]);
+        password = decodeURIComponent(urlMatch[2]);
+        connectString = urlMatch[3];
+      } else {
+        const tnsMatch = cs.match(/^([^/]+)\/([^@]+)@(.+)$/);
+        if (tnsMatch) {
+          user = tnsMatch[1];
+          password = tnsMatch[2];
+          connectString = tnsMatch[3];
+        }
+      }
+      // Oracle binds use :1, :2, … not ?. Rewrite for consistency with
+      // SQLite/MySQL syntax that the user likely already has.
+      let q = queryRaw;
+      let bi = 1;
+      q = q.replace(/\?/g, () => `:${bi++}`);
+      const conn = await oracledb.getConnection({ user, password, connectString });
+      try {
+        const out = await conn.execute(q, qparams, {
+          outFormat: oracledb.OUT_FORMAT_OBJECT,
+          autoCommit: true,
+        });
+        const rows = (out as any).rows || [];
+        const affected = Number((out as any).rowsAffected ?? 0);
+        return { ok: true, outputs: { rows, affected, lastInsertRowid: 0 } };
+      } finally {
+        try { await conn.close(); } catch {}
+      }
+    } catch (e: any) {
+      return { ok: false, error: `oracle: ${e?.message || e}` };
+    }
+  }
+
+  if (driver === "mongodb") {
+    const uri = String(substituted.connection_mongo || substituted.connection || "").trim();
+    if (!uri) return { ok: false, error: "mongodb: URI requise" };
+    const op = String(substituted.mongo_op || "find");
+    const collection = String(substituted.mongo_collection || "").trim();
+    if (!collection) return { ok: false, error: "mongodb: collection requise" };
+    let payload: any = {};
+    const payloadRaw = String(substituted.mongo_payload || "{}").trim();
+    if (payloadRaw) {
+      try { payload = JSON.parse(payloadRaw); }
+      catch (e: any) { return { ok: false, error: `mongodb: payload invalide: ${e?.message}` }; }
+    }
+    try {
+      const mongodb: any = await loadOptionalPkg("mongodb");
+      if (!mongodb) {
+        return { ok: false, error: "mongodb: dépendance 'mongodb' non installée (npm i mongodb)." };
+      }
+      const client = new mongodb.MongoClient(uri);
+      try {
+        await client.connect();
+        let dbName = "";
+        try { dbName = new URL(uri.replace(/^mongodb(\+srv)?:/, "http:")).pathname.replace(/^\//, ""); }
+        catch { /* uri may not parse, fall through */ }
+        if (!dbName) dbName = String(payload.db ?? "test");
+        const col = client.db(dbName).collection(collection);
+        let rows: unknown = [];
+        let affected = 0;
+        switch (op) {
+          case "find":
+            rows = await col.find(payload.filter ?? {}, payload.options ?? {}).toArray(); break;
+          case "findOne":
+            rows = [await col.findOne(payload.filter ?? {}, payload.options ?? {})]; break;
+          case "insertOne": {
+            const r = await col.insertOne(payload.doc ?? {});
+            rows = [{ insertedId: r.insertedId }]; affected = r.acknowledged ? 1 : 0; break;
+          }
+          case "insertMany": {
+            const r = await col.insertMany(payload.docs ?? []);
+            rows = [{ insertedIds: r.insertedIds }]; affected = r.insertedCount ?? 0; break;
+          }
+          case "updateOne": {
+            const r = await col.updateOne(payload.filter ?? {}, payload.update ?? {});
+            rows = [{ matched: r.matchedCount, modified: r.modifiedCount }];
+            affected = r.modifiedCount ?? 0; break;
+          }
+          case "updateMany": {
+            const r = await col.updateMany(payload.filter ?? {}, payload.update ?? {});
+            rows = [{ matched: r.matchedCount, modified: r.modifiedCount }];
+            affected = r.modifiedCount ?? 0; break;
+          }
+          case "deleteOne": {
+            const r = await col.deleteOne(payload.filter ?? {});
+            rows = [{ deleted: r.deletedCount }]; affected = r.deletedCount ?? 0; break;
+          }
+          case "deleteMany": {
+            const r = await col.deleteMany(payload.filter ?? {});
+            rows = [{ deleted: r.deletedCount }]; affected = r.deletedCount ?? 0; break;
+          }
+          case "aggregate":
+            rows = await col.aggregate(payload.pipeline ?? []).toArray(); break;
+          case "countDocuments":
+            rows = [{ count: await col.countDocuments(payload.filter ?? {}) }]; break;
+          default:
+            return { ok: false, error: `mongodb: opération inconnue "${op}"` };
+        }
+        return { ok: true, outputs: { rows, affected, lastInsertRowid: 0 } };
+      } finally {
+        try { await client.close(); } catch {}
+      }
+    } catch (e: any) {
+      return { ok: false, error: `mongodb: ${e?.message || e}` };
+    }
+  }
+
+  if (driver === "redis") {
+    const url = String(substituted.connection_redis || substituted.connection || "").trim();
+    if (!url) return { ok: false, error: "redis: URL requise" };
+    let cmd: unknown[] = [];
+    try {
+      const raw = String(substituted.redis_command || "[]").trim();
+      cmd = JSON.parse(raw);
+      if (!Array.isArray(cmd) || cmd.length === 0) {
+        return { ok: false, error: "redis: commande doit être un array JSON non vide" };
+      }
+    } catch (e: any) { return { ok: false, error: `redis: commande invalide: ${e?.message}` }; }
+    try {
+      const redis: any = await loadOptionalPkg("redis");
+      if (!redis) {
+        return { ok: false, error: "redis: dépendance 'redis' non installée (npm i redis)." };
+      }
+      const client = redis.createClient({ url });
+      await client.connect();
+      try {
+        const reply = await client.sendCommand(cmd.map((x) => String(x)));
+        return { ok: true, outputs: { rows: [reply], affected: 0, lastInsertRowid: 0 } };
+      } finally {
+        try { await client.quit(); } catch {}
+      }
+    } catch (e: any) {
+      return { ok: false, error: `redis: ${e?.message || e}` };
+    }
+  }
+
+  return { ok: false, error: `sql-query: driver inconnu "${driver}"` };
+}
+
+/**
+ * Dynamic import that doesn't fail compile if the package isn't installed.
+ * Tries Node's resolution first (NODE_PATH / cwd-relative), then falls back
+ * to ~/.n2n/npm/node_modules/<pkg> where we install drivers from the
+ * Environnements panel. Returns null on full failure so callers can show
+ * a clean "npm i <pkg>" hint.
+ */
+async function loadOptionalPkg(name: string): Promise<any> {
+  try {
+    return await (Function("n", "return import(n)")(name) as Promise<any>);
+  } catch { /* fall through */ }
+  try {
+    const fallback = join(N2N_NPM_DIR, "node_modules", ...name.split("/"));
+    return await (Function("p", "return import(p)")(fallback) as Promise<any>);
+  } catch {
+    return null;
+  }
+}
 
 function downstreamLeaves(startId: string, edges: GraphEdge[]): string[] {
   const reachable = new Set<string>([startId]);
@@ -1105,20 +1670,127 @@ async function runNodeInCtx(ctx: RunCtx, nodeId: string): Promise<RunResult> {
           ctx.manifests,
         );
       } else if (node.moduleId === "for-each") {
-        const list = (inputs.list ?? letters.a) as unknown;
-        if (!Array.isArray(list)) {
-          result = { ok: false, error: "for-each: l'entrée n'est pas une liste" };
-        } else {
-          const childId = String(substituted.project_id || "");
+        const raw = (inputs.list ?? letters.a) as unknown;
+        const iterMode = String(substituted.iter || "auto");
+        const list = normalizeIterable(raw, iterMode);
+        {
+          const mode = String(substituted.mode || "item");
+          const rawParams = (node.params ?? {}) as Record<string, unknown>;
+          // "item" mode: emit the normalized list as-is — no per-item
+          // action. Useful when for-each is used purely as an iterable
+          // normalizer (dict→entries, string→lines, number→range, etc.)
+          // and the downstream consumes the list directly.
+          if (mode === "item") {
+            result = { ok: true, outputs: { results: list } };
+            emitNodeEnd(ctx, nodeId, result);
+            return result;
+          }
           const results: unknown[] = [];
-          for (const item of list) {
-            const cr = await runChildProject(childId, item, ctx.env, ctx.manifests);
-            if ("ok" in cr && cr.ok) {
-              const outs = cr.outputs as Record<string, unknown>;
-              const firstKey = Object.keys(outs)[0];
-              results.push(firstKey !== undefined ? outs[firstKey] : null);
+          for (let i = 0; i < list.length; i++) {
+            const item = list[i];
+            // Per-iteration substitution context: lets `{item}` and `{i}`
+            // resolve in args / urls / bodies on top of the usual letters
+            // and env vars already substituted into `substituted`.
+            const iterVars = { ...ctx.env, ...letters, item, i };
+
+            if (mode === "subproject") {
+              const childId = String(substituted.project_id || "");
+              if (!childId) { results.push(null); continue; }
+              const cr = await runChildProject(childId, item, ctx.env, ctx.manifests);
+              if ("ok" in cr && cr.ok) {
+                const outs = cr.outputs as Record<string, unknown>;
+                const firstKey = Object.keys(outs)[0];
+                results.push(firstKey !== undefined ? outs[firstKey] : null);
+              } else {
+                results.push({ error: ("error" in cr ? cr.error : null) ?? null });
+              }
+            } else if (mode === "mcp") {
+              const targetStr = substituteString(String(rawParams.mcp_target ?? ""), iterVars).trim();
+              const sep = targetStr.indexOf("::");
+              const server = sep >= 0 ? targetStr.slice(0, sep) : "";
+              const toolName = sep >= 0 ? targetStr.slice(sep + 2) : "";
+              if (!server || !toolName) {
+                results.push({ error: "for-each mcp: target requis (forme server::tool)" });
+                continue;
+              }
+              const argsTpl = rawParams.mcp_arguments;
+              let toolArgs: Record<string, unknown> = {};
+              const expanded = substituteDeep(argsTpl, iterVars);
+              if (expanded && typeof expanded === "object" && !Array.isArray(expanded)) {
+                toolArgs = expanded as Record<string, unknown>;
+              } else if (typeof expanded === "string" && expanded.trim()) {
+                try {
+                  const parsed = JSON.parse(expanded);
+                  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                    toolArgs = parsed as Record<string, unknown>;
+                  }
+                } catch { /* ignore */ }
+              }
+              try {
+                const c = mcpClients.get(server);
+                if (c?.connected) {
+                  const tdef = c.tools.find((t) => t.name === toolName);
+                  if (tdef?.inputSchema) toolArgs = coerceMcpArgs(toolArgs, tdef.inputSchema);
+                }
+                const callRes = await callMcpToolByName(server, toolName, toolArgs);
+                results.push(callRes);
+              } catch (e: any) {
+                results.push({ error: String(e?.message || e) });
+              }
+            } else if (mode === "http") {
+              const method = String(substituted.http_method || "GET").toUpperCase();
+              const url = substituteString(String(rawParams.http_url ?? ""), iterVars);
+              const body = substituteString(String(rawParams.http_body ?? ""), iterVars);
+              const ct = String(substituted.http_content_type || "application/json");
+              const hasBody = method !== "GET" && method !== "HEAD" && body.length > 0;
+              try {
+                const resp = await fetch(url, {
+                  method,
+                  headers: hasBody ? { "Content-Type": ct } : {},
+                  body: hasBody ? body : undefined,
+                  redirect: "follow",
+                });
+                const respCt = resp.headers.get("content-type") || "";
+                let respBody: unknown;
+                if (respCt.includes("application/json")) {
+                  try { respBody = await resp.json(); } catch { respBody = await resp.text(); }
+                } else {
+                  respBody = await resp.text();
+                }
+                results.push({ status: resp.status, body: respBody });
+              } catch (e: any) {
+                results.push({ error: String(e?.message || e) });
+              }
+            } else if (mode === "sql") {
+              const sqlDriver = String(substituted.sql_driver || "sqlite");
+              const sqlConnection = substituteString(String(rawParams.sql_connection ?? ""), iterVars);
+              const sqlQuery = substituteString(String(rawParams.sql_query ?? ""), iterVars);
+              const sqlParameters = substituteString(String(rawParams.sql_parameters ?? "[]"), iterVars);
+              // Build a substituted-like dict matching runSqlQuery's expected
+              // shape so all per-driver branches keep working unchanged.
+              const sqlSubst: Record<string, unknown> = {
+                driver: sqlDriver,
+                connection: sqlConnection,
+                connection_pg: sqlConnection,
+                connection_mysql: sqlConnection,
+                connection_mariadb: sqlConnection,
+                connection_mssql: sqlConnection,
+                connection_oracle: sqlConnection,
+                connection_duckdb: sqlConnection,
+                connection_mongo: sqlConnection,
+                connection_redis: sqlConnection,
+                query: sqlQuery,
+                parameters: sqlParameters,
+                create_dirs: true,
+              };
+              const sub = await runSqlQuery(sqlSubst, {});
+              if ("ok" in sub && sub.ok) {
+                results.push(sub.outputs);
+              } else {
+                results.push({ error: ("error" in sub ? sub.error : null) ?? "?" });
+              }
             } else {
-              results.push(null);
+              results.push({ error: `for-each: mode inconnu "${mode}"` });
             }
           }
           result = { ok: true, outputs: { results } };
@@ -1178,6 +1850,8 @@ async function runNodeInCtx(ctx: RunCtx, nodeId: string): Promise<RunResult> {
         const key = String(substituted.var || params.var || "");
         const value = key ? ctx.env[key] : "";
         result = { ok: true, outputs: { value: value ?? "" } };
+      } else if (node.moduleId === "sql-query") {
+        result = await runSqlQuery(substituted, inputs);
       } else {
         const py = await runPythonModule({
           id: node.moduleId,
@@ -1602,8 +2276,134 @@ async function handleWebhook(req: Request, route: string): Promise<Response> {
 
 // ---------- MCP (Model Context Protocol) ----------
 
-type McpConfig = { command: string; args: string[]; env: Record<string, string> };
+type McpConfigFile = {
+  /** Absolute path; we expand a leading `~/` to the user's home. */
+  path: string;
+  description?: string;
+  format?: "json" | "text";
+};
+
+/**
+ * "Python-style" manual OAuth flow: n2n drives the OAuth handshake itself
+ * (using the user's OAuth client JSON) and writes the resulting tokens to
+ * `tokensPath` in the format the MCP expects. Then the MCP starts and
+ * finds working credentials with zero `auth` subcommand or listener
+ * needed. Works headless / cross-VPS without tunnels.
+ */
+type McpOAuthSpec = {
+  provider: "google";
+  /** Path of the OAuth client JSON (gcp-oauth.keys.json) on disk. */
+  clientSecretFile: string;
+  /** Where to write the resulting tokens (e.g. ~/.gmail-mcp/credentials.json). */
+  tokensPath: string;
+  /** OAuth scopes to request. */
+  scopes: string[];
+  /**
+   * Loopback URI to use as `redirect_uri`. With OAuth Desktop clients
+   * Google accepts any localhost — the URL is shown to the user even if
+   * the page fails to load, and they paste it back.
+   */
+  redirectUri?: string;
+};
+
+type McpConfig = {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  /**
+   * Optional extra args appended to `command + args` to run the MCP's
+   * one-off authentication flow (e.g. `auth` for gmail-autoauth-mcp).
+   * Used by `runMcpAuth()` — the MCP regular process keeps running.
+   */
+  authArgs?: string[];
+  /**
+   * Files this MCP needs on disk before it can run (e.g. OAuth client JSON
+   * for gmail-autoauth at ~/.gmail-mcp/gcp-oauth.keys.json). Listed by the
+   * preset and surfaced as a textarea in the UI; written via
+   * POST /api/mcp/:name/config-file. Path is sandboxed: must resolve under
+   * $HOME and the saved config must declare it.
+   */
+  configFiles?: McpConfigFile[];
+  /**
+   * Manual OAuth flow metadata (see McpOAuthSpec). When set, the UI
+   * exposes "Démarrer OAuth" → paste-callback workflow that mints the
+   * tokens file directly.
+   */
+  oauth?: McpOAuthSpec;
+};
 type McpToolSpec = { name: string; description?: string; inputSchema?: any };
+
+/**
+ * Expand `${VAR}` placeholders in MCP args. Looks up first in the config's
+ * own `env`, then in the parent process env. Unset vars expand to "" so
+ * static templates ("--static-oauth-client-info" with embedded `${ID}`)
+ * don't crash.
+ */
+function expandMcpArg(arg: string, env: Record<string, string>): string {
+  return arg.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, key) =>
+    env[key] ?? process.env[key] ?? "",
+  );
+}
+
+/**
+ * mcp-remote uses lockfiles in ~/.mcp-auth/ to coordinate multiple instances
+ * sharing the same OAuth callback port. If a previous run crashed without
+ * cleaning up, the next start sees the lockfile, treats itself as a
+ * "follower" and polls the (dead) leader instead of binding the port —
+ * which silently breaks the entire OAuth flow.
+ *
+ * Strategy: before spawning a new mcp-remote, walk ~/.mcp-auth/ and delete
+ * lock.json files whose PID is dead OR older than 30 minutes (the same
+ * threshold mcp-remote uses internally — but we trip it earlier so the
+ * subsequent leader-detection always succeeds).
+ */
+async function cleanupStaleMcpAuthLocks(): Promise<void> {
+  const root = join(homedir(), ".mcp-auth");
+  if (!(await exists(root))) return;
+  const walk = async (dir: string): Promise<void> => {
+    let entries;
+    try { entries = await readdir(dir, { withFileTypes: true }); }
+    catch { return; }
+    for (const e of entries) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) {
+        await walk(p);
+        continue;
+      }
+      if (e.name !== "lock.json") continue;
+      let parsed: { pid?: number; timestamp?: number } | null = null;
+      try { parsed = JSON.parse(await readFile(p, "utf8")); } catch { /* corrupt */ }
+      const age = parsed?.timestamp ? Date.now() - parsed.timestamp : Infinity;
+      const pid = parsed?.pid;
+      let alive = false;
+      if (pid && Number.isFinite(pid)) {
+        try { process.kill(pid, 0); alive = true; } catch { alive = false; }
+      }
+      if (!alive || age > 30 * 60_000) {
+        try { await unlink(p); console.log(`[n2n] removed stale mcp-auth lock: ${p}`); } catch {}
+      }
+    }
+  };
+  await walk(root);
+}
+
+/**
+ * Apply runtime tweaks to mcp-remote arg lists so users don't have to keep
+ * their saved configs in sync with our defaults. Right now: bump the OAuth
+ * callback timeout from 30 s (default) to 600 s — the Bun server (or even a
+ * remote tunnel) often takes longer than 30 s end-to-end during a browser
+ * OAuth flow, and the listener closes too early otherwise.
+ */
+function tweakMcpArgs(command: string, args: string[]): string[] {
+  const runner = command.split("/").pop() || command;
+  const usesNpxOrBunx = runner === "npx" || runner === "bunx";
+  if (!usesNpxOrBunx) return args;
+  const hasMcpRemote = args.some((a) => a === "mcp-remote" || a.endsWith("/mcp-remote"));
+  if (!hasMcpRemote) return args;
+  const hasTimeout = args.some((a) => a === "--auth-timeout");
+  if (hasTimeout) return args;
+  return [...args, "--auth-timeout", "600"];
+}
 
 function mcpRuntimeHint(command: string): string | null {
   const c = command.toLowerCase();
@@ -1616,6 +2416,35 @@ function mcpRuntimeHint(command: string): string | null {
   return null;
 }
 
+// Patterns to spot OAuth-related output. We require both a recognised
+// provider OAuth path AND a `client_id=…` query so we don't capture mere
+// discovery URLs (e.g. "Discovered authorization server: accounts.google.com/")
+// that lack the actual auth params.
+const OAUTH_HOST_RE = /https?:\/\/(?:accounts\.google\.com\/o\/oauth2|login\.microsoftonline\.com\/[^\s/]+\/oauth2|github\.com\/login\/oauth|api\.notion\.com\/v1\/oauth|slack\.com\/oauth|appleid\.apple\.com\/auth|auth\.atlassian\.com|app\.asana\.com\/-\/oauth_authorize|api\.linear\.app\/oauth|discord\.com\/api\/oauth2|api\.dropbox\.com\/oauth2|gitlab\.com\/oauth|api\.figma\.com\/oauth)[^\s]*\?[^\s]*\bclient_id=[^\s]+/i;
+// Match localhost:NNN, 127.0.0.1:NNN, plus URL-encoded variants
+// (localhost%3ANNN) and human phrases like "callback port: 33222" or
+// "listening on port 33222". mcp-remote uses several of these formats.
+const LOCAL_LISTENER_PATTERNS: RegExp[] = [
+  /(?:127\.0\.0\.1|localhost)(?::|%3A)(\d{2,5})\b/i,
+  /(?:callback|listener|listening)\s+(?:on\s+)?(?:port\s*:?\s*)(\d{2,5})\b/i,
+  /selected\s+callback\s+port[^\d]*(\d{2,5})\b/i,
+];
+function findLocalPort(s: string): number | null {
+  for (const re of LOCAL_LISTENER_PATTERNS) {
+    const m = s.match(re);
+    if (m) {
+      const port = parseInt(m[1], 10);
+      if (Number.isFinite(port) && port > 0 && port < 65536) return port;
+    }
+  }
+  return null;
+}
+// mcp-remote prints "Auth code received" once the OAuth callback completes
+// successfully. Use that to dismiss the AuthBanner automatically.
+const OAUTH_SUCCESS_RE = /Auth code received|Authorization successful|Tokens? received|authentication[- ]successful/i;
+
+type PendingAuth = { authUrl: string; localPort: number | null };
+
 class McpClient {
   name: string;
   config: McpConfig;
@@ -1623,13 +2452,74 @@ class McpClient {
   tools: McpToolSpec[] = [];
   connected = false;
   error: string | null = null;
+  pendingAuth: PendingAuth | null = null;
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   private buffer = "";
+  private stderrBuf = "";
+  private logs = "";
+  private static MAX_LOG = 16_000;
+  private logBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private scheduleLogBroadcast(): void {
+    if (this.logBroadcastTimer) return;
+    this.logBroadcastTimer = setTimeout(() => {
+      this.logBroadcastTimer = null;
+      broadcast("mcpChanged");
+    }, 400);
+  }
 
   constructor(name: string, config: McpConfig) {
     this.name = name;
     this.config = config;
+  }
+
+  /** Combined stderr + spawn log, capped to MAX_LOG bytes. */
+  recentLogs(): string { return this.logs; }
+
+  private appendLog(chunk: string): void {
+    this.logs += chunk;
+    if (this.logs.length > McpClient.MAX_LOG) {
+      this.logs = this.logs.slice(-Math.floor(McpClient.MAX_LOG * 0.75));
+    }
+  }
+
+  /** Scan a chunk of stderr for OAuth markers. Mutates pendingAuth + emits. */
+  private scanForAuth(chunk: string): void {
+    let changed = false;
+    if (!this.pendingAuth?.authUrl) {
+      const m = chunk.match(OAUTH_HOST_RE);
+      if (m) {
+        // Strip trailing punctuation that often clings to URLs in logs
+        const url = m[0].replace(/[)\].,;"'>]+$/g, "");
+        this.pendingAuth = { authUrl: url, localPort: this.pendingAuth?.localPort ?? null };
+        changed = true;
+      }
+    }
+    if (!this.pendingAuth?.localPort) {
+      const port = findLocalPort(chunk);
+      if (port) {
+        this.pendingAuth = {
+          authUrl: this.pendingAuth?.authUrl ?? "",
+          localPort: port,
+        };
+        changed = true;
+      }
+    }
+    // Auto-dismiss when we see a success marker (e.g. mcp-remote received
+    // the OAuth callback and exchanged it for tokens).
+    if (this.pendingAuth && OAUTH_SUCCESS_RE.test(chunk)) {
+      this.pendingAuth = null;
+      changed = true;
+    }
+    if (changed) broadcast("mcpChanged");
+  }
+
+  dismissAuth(): void {
+    if (this.pendingAuth) {
+      this.pendingAuth = null;
+      broadcast("mcpChanged");
+    }
   }
 
   async start(): Promise<boolean> {
@@ -1644,9 +2534,15 @@ class McpClient {
         return false;
       }
     }
+    this.logs = "";
+    this.pendingAuth = null;
+    const expandedArgs = tweakMcpArgs(
+      this.config.command,
+      (this.config.args || []).map((a) => expandMcpArg(a, this.config.env || {})),
+    );
     try {
       this.proc = spawn({
-        cmd: [resolved, ...(this.config.args || [])],
+        cmd: [resolved, ...expandedArgs],
         env: { ...process.env, ...(this.config.env || {}), PATH: path } as Record<string, string>,
         stdin: "pipe", stdout: "pipe", stderr: "pipe",
       });
@@ -1655,7 +2551,7 @@ class McpClient {
       return false;
     }
 
-    // Read stdout line-by-line
+    // Read stdout line-by-line (JSON-RPC messages)
     (async () => {
       if (!this.proc) return;
       const reader = this.proc.stdout.getReader();
@@ -1675,6 +2571,31 @@ class McpClient {
       } catch {}
     })();
 
+    // Read stderr — surface logs to the UI and detect OAuth URLs.
+    (async () => {
+      if (!this.proc) return;
+      const reader = this.proc.stderr.getReader();
+      const decoder = new TextDecoder();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const text = decoder.decode(value, { stream: true });
+          this.stderrBuf += text;
+          this.appendLog(text);
+          this.scanForAuth(this.stderrBuf);
+          // Keep a small tail of stderr for cross-line URL matching, but cap
+          // memory: if no URL has matched yet keep last 4KB, else drop.
+          if (this.stderrBuf.length > 8192) {
+            this.stderrBuf = this.stderrBuf.slice(-4096);
+          }
+          // Broadcast log update to clients (live tail), debounced to avoid
+          // spamming SSE when a server is chatty.
+          this.scheduleLogBroadcast();
+        }
+      } catch {}
+    })();
+
     // Watch exit
     this.proc.exited.then((code) => {
       this.connected = false;
@@ -1683,16 +2604,23 @@ class McpClient {
     });
 
     try {
+      // initialize: long timeout because OAuth-needing servers stay silent
+      // until the user finishes the auth flow in their browser.
       await this.request("initialize", {
         protocolVersion: "2024-11-05",
         capabilities: {},
         clientInfo: { name: "n2n", version: "0.1.0" },
-      });
+      }, 10 * 60_000);
       this.notify("notifications/initialized");
       const result = await this.request("tools/list", {});
       this.tools = result?.tools || [];
       this.connected = true;
       this.error = null;
+      // Note: don't auto-clear pendingAuth here. mcp-remote routes initialize
+      // and tools/list locally without authentication, but tools/call still
+      // needs OAuth to succeed. The banner stays up until we observe an
+      // explicit success marker on stderr (OAUTH_SUCCESS_RE) or the user
+      // dismisses it.
       return true;
     } catch (err: any) {
       this.error = String(err.message || err);
@@ -1742,21 +2670,162 @@ class McpClient {
   }
 
   callTool(name: string, args: any): Promise<any> {
-    return this.request("tools/call", { name, arguments: args || {} });
+    // Long timeout: OAuth-needing servers (mcp-remote) intercept the first
+    // call, run a browser OAuth flow, then retry. The user may take minutes
+    // to log in and consent — don't reject before mcp-remote does.
+    return this.request("tools/call", { name, arguments: args || {} }, 10 * 60_000);
   }
 
   stop(): void {
+    if (this.logBroadcastTimer) {
+      clearTimeout(this.logBroadcastTimer);
+      this.logBroadcastTimer = null;
+    }
     if (this.proc && !this.proc.killed) {
       try { this.proc.kill(); } catch {}
     }
+    if (this.authProc && !this.authProc.killed) {
+      try { this.authProc.kill(); } catch {}
+    }
     this.proc = null;
+    this.authProc = null;
     this.connected = false;
     this.failPending(new Error("MCP arrêté"));
+  }
+
+  // ---- one-off auth flow ----
+
+  authProc: Subprocess<"pipe", "pipe", "pipe"> | null = null;
+  authRunning = false;
+
+  /**
+   * Spawn `command + args + authArgs` as a one-shot process. Most "OAuth-y"
+   * MCP servers (gmail-autoauth, gdrive…) ship a separate `auth` subcommand
+   * that opens a browser, completes OAuth, writes credentials to disk, then
+   * exits. The regular MCP process (if running) is left alone — it'll pick up
+   * the credentials on next restart.
+   */
+  async runAuth(): Promise<void> {
+    if (this.authRunning) return;
+    const authArgs = this.config.authArgs;
+    if (!authArgs || authArgs.length === 0) {
+      this.appendLog("[auth] Aucune commande d'authentification configurée pour ce serveur.\n");
+      broadcast("mcpChanged");
+      return;
+    }
+    const path = await getExtendedPath();
+    const resolved = (await findInPath(this.config.command, path)) || this.config.command;
+    if (resolved === this.config.command && !this.config.command.includes("/")) {
+      const guidance = mcpRuntimeHint(this.config.command);
+      this.appendLog(`[auth] "${this.config.command}" introuvable. ${guidance ?? ""}\n`);
+      broadcast("mcpChanged");
+      return;
+    }
+    const env = this.config.env || {};
+    const fullArgs = tweakMcpArgs(
+      this.config.command,
+      [...(this.config.args || []), ...authArgs].map((a) => expandMcpArg(a, env)),
+    );
+    this.appendLog(`\n[auth] $ ${this.config.command} ${fullArgs.join(" ")}\n`);
+    this.pendingAuth = null;
+    this.authRunning = true;
+    broadcast("mcpChanged");
+
+    let proc: Subprocess<"pipe", "pipe", "pipe">;
+    try {
+      proc = spawn({
+        cmd: [resolved, ...fullArgs],
+        env: { ...process.env, ...(this.config.env || {}), PATH: path } as Record<string, string>,
+        stdin: "pipe", stdout: "pipe", stderr: "pipe",
+      });
+    } catch (err: any) {
+      this.appendLog(`[auth] spawn failed: ${err?.message || err}\n`);
+      this.authRunning = false;
+      broadcast("mcpChanged");
+      return;
+    }
+    this.authProc = proc;
+
+    // Tee stdout + stderr into the existing log + URL scanner. Some MCPs
+    // print the auth URL on stdout, others on stderr — handle both.
+    const drain = async (stream: ReadableStream<Uint8Array>) => {
+      const reader = stream.getReader();
+      const decoder = new TextDecoder();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const text = decoder.decode(value, { stream: true });
+          this.stderrBuf += text;
+          this.appendLog(text);
+          this.scanForAuth(this.stderrBuf);
+          if (this.stderrBuf.length > 8192) this.stderrBuf = this.stderrBuf.slice(-4096);
+          this.scheduleLogBroadcast();
+        }
+      } catch {}
+    };
+    void drain(proc.stdout);
+    void drain(proc.stderr);
+
+    proc.exited.then(async (code) => {
+      this.appendLog(`[auth] terminé (code ${code})\n`);
+      this.authRunning = false;
+      this.authProc = null;
+      this.pendingAuth = null;
+      broadcast("mcpChanged");
+      if (code === 0) {
+        // Credentials saved — restart the main MCP so it reloads them.
+        this.appendLog(`[auth] Identifiants enregistrés, redémarrage du serveur MCP…\n`);
+        try { await startMcpServer(this.name, this.config); } catch {}
+      }
+    });
   }
 }
 
 const mcpClients = new Map<string, McpClient>();
 let mcpConfigCache: { servers: Record<string, McpConfig> } | null = null;
+
+/**
+ * Compat shim — auto-attach a Google OAuth spec to existing saved configs
+ * that match a known preset by command/args. Saves users from having to
+ * delete + recreate their MCP server when we add OAuth metadata to the
+ * preset shape.
+ */
+const KNOWN_OAUTH_PRESETS: Array<{
+  matches: (cfg: McpConfig) => boolean;
+  oauth: McpOAuthSpec;
+}> = [
+  {
+    matches: (c) =>
+      c.args.some((a) => a.includes("@gongrzhe/server-gmail-autoauth-mcp")),
+    oauth: {
+      provider: "google",
+      clientSecretFile: "~/.gmail-mcp/gcp-oauth.keys.json",
+      tokensPath: "~/.gmail-mcp/credentials.json",
+      scopes: [
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.settings.basic",
+      ],
+      redirectUri: "http://localhost:3000/oauth2callback",
+    },
+  },
+  {
+    matches: (c) =>
+      c.args.some((a) => a.includes("@modelcontextprotocol/server-gdrive")),
+    oauth: {
+      provider: "google",
+      clientSecretFile: "~/.config/mcp-gdrive/gcp-oauth.keys.json",
+      tokensPath: "~/.config/mcp-gdrive/credentials.json",
+      scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+      redirectUri: "http://localhost:3000/oauth2callback",
+    },
+  },
+];
+function autoAttachKnownOAuth(cfg: McpConfig): void {
+  if (cfg.oauth) return;
+  const preset = KNOWN_OAUTH_PRESETS.find((p) => p.matches(cfg));
+  if (preset) cfg.oauth = preset.oauth;
+}
 
 async function loadMcpConfig(): Promise<{ servers: Record<string, McpConfig> }> {
   if (mcpConfigCache) return mcpConfigCache;
@@ -1764,6 +2833,9 @@ async function loadMcpConfig(): Promise<{ servers: Record<string, McpConfig> }> 
     const parsed = JSON.parse(await readFile(MCP_SERVERS_PATH, "utf8"));
     mcpConfigCache = parsed && typeof parsed === "object" && parsed.servers ? parsed : { servers: {} };
   } catch { mcpConfigCache = { servers: {} }; }
+  for (const cfg of Object.values(mcpConfigCache!.servers)) {
+    autoAttachKnownOAuth(cfg);
+  }
   return mcpConfigCache!;
 }
 
@@ -1776,6 +2848,10 @@ async function saveMcpConfig(): Promise<void> {
 async function startMcpServer(name: string, config: McpConfig): Promise<void> {
   const existing = mcpClients.get(name);
   if (existing) existing.stop();
+  // Drop stale ~/.mcp-auth/ lockfiles so mcp-remote always becomes leader
+  // and actually binds the OAuth callback port. (Required when a previous
+  // mcp-remote crashed without clean shutdown.)
+  await cleanupStaleMcpAuthLocks().catch(() => undefined);
   const client = new McpClient(name, config);
   mcpClients.set(name, client);
   await client.start();
@@ -1807,14 +2883,293 @@ function listMcpState(): any[] {
     const client = mcpClients.get(name);
     return {
       name, command: config.command, args: config.args || [], env: config.env || {},
+      authArgs: config.authArgs || [],
+      configFiles: config.configFiles || [],
+      oauth: config.oauth || null,
       connected: !!client?.connected,
       error: client?.error || null,
       tools: client ? client.tools.map((t) => ({
         name: t.name, description: t.description,
         inputSchema: t.inputSchema || { type: "object", properties: {} },
       })) : [],
+      pendingAuth: client?.pendingAuth ?? null,
+      authRunning: !!client?.authRunning,
+      oauthCallbackPath: `/oauth/${encodeURIComponent(name)}/`,
+      logs: client?.recentLogs() ?? "",
     };
   });
+}
+
+// ---------- Manual OAuth flow ----------
+//
+// Drives the OAuth handshake from n2n itself (no listener needed in the
+// MCP). Loosely modeled on the Python `google_auth_start` / `complete`
+// pair — we generate the auth URL from the user's OAuth client JSON, the
+// user opens it in their browser, completes consent, and pastes back
+// either the full callback URL or just the `code` parameter. We exchange
+// the code for tokens at Google's token endpoint and write a credentials
+// file in the format the MCP (gongrzhe gmail-autoauth) reads on startup.
+
+type OAuthPendingSession = {
+  mcpName: string;
+  state: string;
+  codeVerifier: string;
+  redirectUri: string;
+  clientId: string;
+  clientSecret: string;
+  tokenUri: string;
+  scopes: string[];
+  tokensPath: string;
+  createdAt: number;
+};
+const OAUTH_SESSION_TTL_MS = 30 * 60_000;
+const oauthSessions = new Map<string, OAuthPendingSession>();
+function pruneExpiredOAuthSessions(): void {
+  const cutoff = Date.now() - OAUTH_SESSION_TTL_MS;
+  for (const [k, s] of oauthSessions) {
+    if (s.createdAt < cutoff) oauthSessions.delete(k);
+  }
+}
+
+function expandHomePath(p: string): string {
+  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
+  return p;
+}
+
+function base64UrlEncode(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function startGoogleOAuth(
+  name: string,
+  overrides?: { redirectUri?: string },
+): Promise<{
+  sessionId: string;
+  authUrl: string;
+  redirectUri: string;
+}> {
+  const cfg = mcpConfigCache?.servers[name];
+  if (!cfg?.oauth) throw new Error(`OAuth non configuré pour "${name}"`);
+  const spec = cfg.oauth;
+  const clientFile = expandHomePath(spec.clientSecretFile);
+  if (!(await exists(clientFile))) {
+    throw new Error(
+      `OAuth client JSON introuvable à ${clientFile}. ` +
+      `Colle ton gcp-oauth.keys.json dans la modal du serveur d'abord.`,
+    );
+  }
+  let parsed: any;
+  try { parsed = JSON.parse(await readFile(clientFile, "utf8")); }
+  catch (e: any) { throw new Error(`OAuth client JSON invalide: ${e?.message || e}`); }
+  const inner = parsed.installed || parsed.web || parsed;
+  const clientId = String(inner.client_id || "");
+  const clientSecret = String(inner.client_secret || "");
+  if (!clientId || !clientSecret) throw new Error("client_id / client_secret manquants dans le JSON OAuth");
+  const tokenUri = String(inner.token_uri || "https://oauth2.googleapis.com/token");
+  const authUri = String(inner.auth_uri || "https://accounts.google.com/o/oauth2/v2/auth");
+
+  // Loopback redirect_uri: works with Desktop OAuth clients without
+  // pre-registration. The browser will fail to load (no local listener)
+  // but the URL bar still has ?code=… for the user to copy. The user can
+  // override it from the UI to match whatever they registered in Google
+  // Cloud Console (Web-type OAuth clients require an exact match).
+  const redirectUri =
+    (overrides?.redirectUri && overrides.redirectUri.trim()) ||
+    spec.redirectUri ||
+    "http://localhost:3000/oauth2callback";
+
+  const codeVerifier = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)));
+  const challengeBytes = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(codeVerifier)),
+  );
+  const codeChallenge = base64UrlEncode(challengeBytes);
+  const state = randomUUID();
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: "code",
+    scope: spec.scopes.join(" "),
+    state,
+    access_type: "offline",
+    prompt: "consent",
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
+    include_granted_scopes: "true",
+  });
+  const authUrl = `${authUri}?${params.toString()}`;
+
+  const sessionId = randomUUID();
+  pruneExpiredOAuthSessions();
+  oauthSessions.set(sessionId, {
+    mcpName: name,
+    state,
+    codeVerifier,
+    redirectUri,
+    clientId,
+    clientSecret,
+    tokenUri,
+    scopes: spec.scopes,
+    tokensPath: spec.tokensPath,
+    createdAt: Date.now(),
+  });
+  return { sessionId, authUrl, redirectUri };
+}
+
+async function completeGoogleOAuth(
+  name: string,
+  sessionId: string,
+  args: { code?: string; callbackUrl?: string },
+): Promise<{ tokensPath: string }> {
+  pruneExpiredOAuthSessions();
+  const session = oauthSessions.get(sessionId);
+  if (!session) throw new Error("Session OAuth inconnue ou expirée — relance « Démarrer OAuth »");
+  if (session.mcpName !== name) throw new Error("Session OAuth liée à un autre MCP");
+
+  let code = (args.code || "").trim();
+  if (args.callbackUrl) {
+    try {
+      const u = new URL(args.callbackUrl);
+      const errParam = u.searchParams.get("error");
+      if (errParam) throw new Error(`Google a renvoyé une erreur: ${errParam}`);
+      const cbCode = u.searchParams.get("code");
+      const cbState = u.searchParams.get("state");
+      if (cbCode) code = cbCode;
+      if (cbState && cbState !== session.state) {
+        throw new Error("State OAuth invalide (la callback ne correspond pas à la session)");
+      }
+    } catch (e: any) {
+      // Throw if it's not a URL parse error
+      if (e?.message?.includes("State OAuth")) throw e;
+      if (e?.message?.includes("Google a renvoyé")) throw e;
+      // else accept the raw code as-is
+    }
+  }
+  if (!code) throw new Error("code OAuth manquant (colle l'URL complète ou juste le code)");
+
+  // Exchange code for tokens
+  const tokenResp = await fetch(session.tokenUri, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: session.clientId,
+      client_secret: session.clientSecret,
+      code,
+      code_verifier: session.codeVerifier,
+      grant_type: "authorization_code",
+      redirect_uri: session.redirectUri,
+    }).toString(),
+  });
+  if (!tokenResp.ok) {
+    const t = await tokenResp.text();
+    throw new Error(`Échec exchange Google (${tokenResp.status}): ${t}`);
+  }
+  const tokens = (await tokenResp.json()) as Record<string, any>;
+  // Match google-auth-library format expected by gongrzhe (and most
+  // node-google clients): include expiry_date in ms epoch.
+  if (typeof tokens.expires_in === "number" && !tokens.expiry_date) {
+    tokens.expiry_date = Date.now() + tokens.expires_in * 1000;
+  }
+  const tokensPath = expandHomePath(session.tokensPath);
+  await mkdir(dirname(tokensPath), { recursive: true });
+  await writeFile(tokensPath, JSON.stringify(tokens, null, 2));
+  oauthSessions.delete(sessionId);
+
+  // Restart the MCP so it loads the freshly-minted credentials.
+  const cfg = mcpConfigCache?.servers[name];
+  if (cfg) await startMcpServer(name, cfg);
+
+  return { tokensPath };
+}
+
+async function proxyMcpOAuth(req: Request, name: string, rest: string): Promise<Response> {
+  const client = mcpClients.get(name);
+  if (!client) return err(`MCP "${name}" non enregistré`, 404);
+  const port = client.pendingAuth?.localPort;
+  if (!port) {
+    return new Response(
+      `Cette URL est une callback OAuth — elle n'est pas faite pour être visitée directement.\n\n` +
+      `Pour authentifier le MCP "${name}":\n` +
+      `1. Ouvre l'app n2n.\n` +
+      `2. Dans le panneau MCP, clique « Lancer OAuth » sur la carte du serveur (ou invoque un de ses outils via un nœud / le chat).\n` +
+      `3. Une bannière OAuth apparaîtra avec un lien Google/GitHub/etc.\n` +
+      `4. Clic sur ce lien → consent → Google redirigera ici automatiquement.\n`,
+      { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } },
+    );
+  }
+  const incoming = new URL(req.url);
+  const headers: Record<string, string> = {};
+  for (const [k, v] of req.headers) {
+    const lk = k.toLowerCase();
+    if (lk === "host" || lk === "connection" || lk === "content-length") continue;
+    headers[k] = v;
+  }
+  let body: ArrayBuffer | undefined = undefined;
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    body = await req.arrayBuffer();
+  }
+  // Some Node servers bind on ::: (dual-stack) and `fetch` to 127.0.0.1
+  // resolves only IPv4 — try IPv4, then IPv6 loopback. Plus a small retry
+  // window in case mcp-remote is between two listen() calls (rare race).
+  const hosts = ["127.0.0.1", "[::1]"];
+  let lastErr: any = null;
+  const isConnectErr = (e: any) => {
+    const code = e?.code || e?.cause?.code || "";
+    const msg = String(e?.message || e || "");
+    return (
+      code === "ECONNREFUSED" ||
+      /ECONNREFUSED|refused|unable to connect|connection|fetch failed|ENOTFOUND/i.test(msg)
+    );
+  };
+  for (let attempt = 0; attempt < 6; attempt++) {
+    for (const host of hosts) {
+      const target = `http://${host}:${port}/${rest}${incoming.search}`;
+      try {
+        const resp = await fetch(target, {
+          method: req.method,
+          headers,
+          body,
+          redirect: "manual",
+        });
+        const outHeaders = new Headers();
+        resp.headers.forEach((v, k) => {
+          const lk = k.toLowerCase();
+          if (lk === "transfer-encoding" || lk === "connection") return;
+          outHeaders.set(k, v);
+        });
+        for (const [k, v] of Object.entries(corsHeaders())) outHeaders.set(k, v);
+        return new Response(resp.body, { status: resp.status, headers: outHeaders });
+      } catch (e: any) {
+        lastErr = e;
+        // Bubble up non-connect errors; otherwise we'll retry.
+        if (!isConnectErr(e)) {
+          attempt = 99;
+          break;
+        }
+      }
+    }
+    // brief backoff between retry rounds (0, 200, 400, 800, 1600, 3200 ms)
+    if (attempt < 5) await new Promise((r) => setTimeout(r, 200 * 2 ** attempt));
+  }
+  const msg = lastErr?.message || String(lastErr);
+  const refused = isConnectErr(lastErr);
+  console.warn(
+    `[n2n] OAuth proxy failed for "${name}" → http://*:${port}${rest ? "/" + rest : ""} ` +
+    `after retries — ${refused ? "connection refused" : msg}`,
+  );
+  return new Response(
+    refused
+      ? `Le MCP "${name}" n'écoute pas sur localhost:${port}.\n\n` +
+        `Erreur réseau : ${msg}\n\n` +
+        `Causes les plus probables :\n` +
+        `• mcp-remote n'a pas (encore) déclenché son flux OAuth — clique « Lancer OAuth » d'abord.\n` +
+        `• Sa fenêtre d'attente est expirée (mcp-remote ferme son listener après quelques minutes).\n` +
+        `• Le sous-processus mcp-remote a quitté — vérifie le journal du serveur dans l'app.\n\n` +
+        `Diagnostic : lance sur le VPS \`ss -lntp | grep ${port}\` ou \`lsof -i :${port}\` ` +
+        `pendant que la bannière OAuth est affichée. Tu devrais voir node/npx en LISTEN.\n`
+      : `Échec du proxy vers localhost:${port}: ${msg}`,
+    { status: 502, headers: { "Content-Type": "text/plain; charset=utf-8" } },
+  );
 }
 
 async function callMcpToolByName(server: string, tool: string, args: any): Promise<any> {
@@ -2149,16 +3504,131 @@ const ROUTES: RouteMatch[] = [
     if (cfg) await startMcpServer(p.name, cfg);
     return json({ ok: true });
   }),
+  route("POST", "/api/mcp/:name/auth-flow", async (_r, p) => {
+    await loadMcpConfig();
+    let client = mcpClients.get(p.name);
+    if (!client) {
+      const cfg = mcpConfigCache?.servers[p.name];
+      if (!cfg) return err("MCP non trouvé", 404);
+      client = new McpClient(p.name, cfg);
+      mcpClients.set(p.name, client);
+    }
+    void client.runAuth();
+    return json({ ok: true });
+  }),
+  route("POST", "/api/mcp/:name/dismiss-auth", async (_r, p) => {
+    const client = mcpClients.get(p.name);
+    client?.dismissAuth();
+    return json({ ok: true });
+  }),
+  // Manual OAuth flow — start: generates Google auth URL, stores PKCE
+  // session. Returns auth URL + sessionId for the UI to walk the user
+  // through paste-the-callback.
+  route("POST", "/api/mcp/:name/oauth/start", async (req, p) => {
+    await loadMcpConfig();
+    let body: { redirectUri?: string } = {};
+    try { body = await readJson<{ redirectUri?: string }>(req); } catch {}
+    return json(await startGoogleOAuth(p.name, body));
+  }),
+  // Manual OAuth flow — complete: takes either the full callback URL the
+  // browser landed on (recommended) or just the `code`. Exchanges for
+  // tokens and writes them to the MCP's expected credentials path.
+  route("POST", "/api/mcp/:name/oauth/complete", async (req, p) => {
+    const body = await readJson<{ sessionId: string; code?: string; callbackUrl?: string }>(req);
+    if (!body?.sessionId) return err("sessionId requis", 400);
+    return json(await completeGoogleOAuth(p.name, body.sessionId, body));
+  }),
+  // Write a config file that an MCP needs at runtime (typically an OAuth
+  // client JSON the MCP reads from disk). The path *must* be one declared
+  // in the saved server config under `configFiles`, and *must* resolve
+  // under the user's home — the user can't just POST to /etc/passwd.
+  route("POST", "/api/mcp/:name/config-file", async (req, p) => {
+    await loadMcpConfig();
+    const cfg = mcpConfigCache?.servers[p.name];
+    if (!cfg) return err("MCP non trouvé", 404);
+    const { path: rawPath, content } = await readJson<{ path: string; content: string }>(req);
+    if (typeof rawPath !== "string" || typeof content !== "string") {
+      return err("path et content requis", 400);
+    }
+    const declared = cfg.configFiles?.find((f) => f.path === rawPath);
+    if (!declared) return err("Chemin non déclaré pour ce MCP", 403);
+    const home = homedir();
+    const expanded = rawPath.startsWith("~/")
+      ? join(home, rawPath.slice(2))
+      : resolve(rawPath);
+    const homeReal = resolve(home);
+    if (expanded !== homeReal && !expanded.startsWith(homeReal + sep)) {
+      return err("Chemin hors du répertoire utilisateur", 403);
+    }
+    if (declared.format === "json") {
+      try { JSON.parse(content); }
+      catch { return err("Le contenu n'est pas un JSON valide", 400); }
+    }
+    await mkdir(dirname(expanded), { recursive: true });
+    await writeFile(expanded, content);
+    return json({ ok: true, path: expanded });
+  }),
+  // Fire-and-forget probe to coax mcp-remote into starting its OAuth flow
+  // (which it only does after a tools/call returns 401). We send a JSON-RPC
+  // request and return *immediately* — no await — so the HTTP response
+  // doesn't sit open while the user signs in. mcp-remote keeps running in
+  // the background and the auth URL surfaces on stderr → AuthBanner.
+  route("POST", "/api/mcp/:name/probe-oauth", async (req, p) => {
+    const client = mcpClients.get(p.name);
+    if (!client || !client.connected) return err("MCP non connecté", 503);
+    const body = await readJson<{ tool?: string }>(req);
+    let toolName = body?.tool;
+    if (!toolName) {
+      const safe = client.tools.find((t) => /^(list|search|get)[_-]/i.test(t.name));
+      toolName = safe?.name || client.tools[0]?.name;
+    }
+    if (!toolName) return err("Aucun outil disponible pour la probe", 400);
+    // We swallow the eventual response — it's a probe.
+    client.callTool(toolName, {}).catch(() => undefined);
+    return json({ ok: true, probedTool: toolName });
+  }),
   route("PUT", "/api/mcp/:name", async (req, p) => {
     if (!/^[a-z0-9_-]+$/i.test(p.name)) throw new Error("Nom invalide");
     const config = await readJson<any>(req);
     await loadMcpConfig();
+    const cf = Array.isArray(config?.configFiles)
+      ? (config.configFiles as any[])
+          .filter((f) => f && typeof f.path === "string")
+          .map((f) => ({
+            path: String(f.path),
+            description: typeof f.description === "string" ? f.description : undefined,
+            format: f.format === "text" ? "text" as const : "json" as const,
+          }))
+      : undefined;
+    let oauth: McpOAuthSpec | undefined;
+    if (config?.oauth && typeof config.oauth === "object") {
+      const o = config.oauth as any;
+      if (
+        o.provider === "google" &&
+        typeof o.clientSecretFile === "string" &&
+        typeof o.tokensPath === "string" &&
+        Array.isArray(o.scopes)
+      ) {
+        oauth = {
+          provider: "google",
+          clientSecretFile: String(o.clientSecretFile),
+          tokensPath: String(o.tokensPath),
+          scopes: o.scopes.map(String),
+          redirectUri: typeof o.redirectUri === "string" ? o.redirectUri : undefined,
+        };
+      }
+    }
     mcpConfigCache!.servers[p.name] = {
       command: String(config?.command || ""),
       args: Array.isArray(config?.args) ? config.args.map(String) : [],
       env: config?.env && typeof config.env === "object"
         ? Object.fromEntries(Object.entries(config.env).map(([k, v]) => [k, String(v)]))
         : {},
+      authArgs: Array.isArray(config?.authArgs) && config.authArgs.length > 0
+        ? config.authArgs.map(String)
+        : undefined,
+      configFiles: cf && cf.length > 0 ? cf : undefined,
+      oauth,
     };
     await saveMcpConfig();
     await startMcpServer(p.name, mcpConfigCache!.servers[p.name]);
@@ -2175,10 +3645,13 @@ const ROUTES: RouteMatch[] = [
   // Runtimes (Node, Python, …): detect + one-click install
   route("GET", "/api/runtimes", async () => json(await listRuntimes())),
   route("POST", "/api/runtimes/:id/install", async (_r, p) => {
-    if (p.id !== "node" && p.id !== "python") return err("Runtime inconnu", 404);
+    const known =
+      p.id === "node" ||
+      p.id === "python" ||
+      KNOWN_NPM_PKGS.some((k) => k.id === p.id);
+    if (!known) return err("Runtime inconnu", 404);
     const state = getInstallState(p.id);
     if (state.installing) return json({ ok: true, alreadyRunning: true });
-    // Run install in background — long-running operation, don't block HTTP.
     void startRuntimeInstall(p.id);
     return json({ ok: true });
   }),
@@ -2254,6 +3727,20 @@ async function dispatchApi(req: Request): Promise<Response> {
     return handleWebhook(req, route);
   }
 
+  // OAuth proxy: /oauth/<server-name>/<rest> — receives OAuth provider redirects
+  // and forwards them to the MCP process's localhost listener. Bypasses the
+  // global API token because OAuth providers can't carry a bearer header.
+  // The MCP process itself handles state/code exchange, so there's no extra
+  // secret we'd want to enforce here.
+  if (url.pathname.startsWith("/oauth/")) {
+    const tail = url.pathname.slice("/oauth/".length);
+    const slash = tail.indexOf("/");
+    const name = decodeURIComponent(slash === -1 ? tail : tail.slice(0, slash));
+    const rest = slash === -1 ? "" : tail.slice(slash + 1);
+    if (!name) return err("Nom MCP requis", 400);
+    return proxyMcpOAuth(req, name, rest);
+  }
+
   const unauthorized = checkApiAuth(req, url);
   if (unauthorized) return unauthorized;
 
@@ -2296,6 +3783,11 @@ async function main(): Promise<void> {
   Bun.serve({
     port: API_PORT,
     hostname: HOST,
+    // Bun's default idle timeout is 10 s — too short for /api/ai/chat (long
+    // streaming) and /api/mcp/call when an MCP runs an OAuth flow that
+    // takes minutes for the user to complete in the browser. 255 is the max
+    // Bun accepts; for unbounded we'd need WebSockets.
+    idleTimeout: 255,
     fetch: dispatchApi,
     error(e) {
       console.error("[n2n] server error:", e);
@@ -2309,6 +3801,7 @@ async function main(): Promise<void> {
     Bun.serve({
       port: WEBHOOK_PORT,
       hostname: HOST,
+      idleTimeout: 255,
       fetch: dispatchWebhook,
       error(e) {
         console.error("[n2n] webhook server error:", e);

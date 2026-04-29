@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { ModuleManifest } from "@/lib/types";
+import { paramVisible } from "@/lib/params";
 import { ParamField } from "./ParamField";
 
 type Props = {
@@ -77,20 +78,23 @@ export function ConfigModal({
               Aucun paramètre à configurer.
             </p>
           )}
-          {module.params.map((p) => (
-            <div key={p.name} className="flex flex-col gap-1.5">
-              <label className="text-[11px] font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300">
-                {p.label ?? p.name}
-              </label>
-              <ParamField
-                spec={p}
-                value={draft[p.name]}
-                onChange={(v) => update(p.name, v)}
-                allParams={draft}
-                availableLetters={availableLetters}
-              />
-            </div>
-          ))}
+          {module.params.map((p) => {
+            if (!paramVisible(p.showIf, draft)) return null;
+            return (
+              <div key={p.name} className="flex flex-col gap-1.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                  {p.label ?? p.name}
+                </label>
+                <ParamField
+                  spec={p}
+                  value={draft[p.name]}
+                  onChange={(v) => update(p.name, v)}
+                  allParams={draft}
+                  availableLetters={availableLetters}
+                />
+              </div>
+            );
+          })}
         </div>
 
         <footer className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3 dark:border-slate-700 dark:bg-slate-800/40">

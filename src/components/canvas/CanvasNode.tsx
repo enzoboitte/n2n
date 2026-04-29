@@ -3,6 +3,7 @@
 import { useCallback } from "react";
 import { ParamField } from "@/components/ui/ParamField";
 import { outputSocketPosition } from "@/lib/layout";
+import { paramVisible } from "@/lib/params";
 import type {
   CanvasNode as CanvasNodeData,
   ModuleManifest,
@@ -109,7 +110,9 @@ export function CanvasNode({
   const hasInput = !!module;
   const hasParams = !!module && module.params.length > 0;
   const inlineParams =
-    module?.params.filter((p) => INLINE_TYPES.includes(p.type)) ?? [];
+    module?.params.filter(
+      (p) => INLINE_TYPES.includes(p.type) && paramVisible(p.showIf, node.params),
+    ) ?? [];
   const color = module?.color ?? "#94a3b8";
   const name = module?.name ?? `Module manquant (${node.moduleId})`;
   const result = node.result;
