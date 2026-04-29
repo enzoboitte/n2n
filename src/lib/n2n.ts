@@ -54,6 +54,18 @@ export type McpCallResult = {
   [k: string]: unknown;
 };
 
+export type RuntimeStatus = {
+  id: "node" | "python";
+  label: string;
+  description: string;
+  installed: boolean;
+  installable: boolean;
+  installing: boolean;
+  error: string | null;
+  log: string;
+  details: { name: string; path: string | null; version: string | null }[];
+};
+
 export type HistoryEntry = {
   timestamp: number;
   projectId: string | null;
@@ -180,6 +192,9 @@ type N2nApi = {
     args: Record<string, unknown>,
   ) => Promise<McpCallResult>;
   onMcpChanged: (callback: () => void) => () => void;
+  runtimesList: () => Promise<RuntimeStatus[]>;
+  runtimesInstall: (id: "node" | "python") => Promise<void>;
+  onRuntimesChanged: (callback: () => void) => () => void;
 };
 
 declare global {
@@ -339,7 +354,8 @@ export function setActiveProfile(id: string | null): void {
       listeners.mcpChanged.size +
       listeners.nodeRunStart.size +
       listeners.nodeRunEnd.size +
-      listeners.envChanged.size >
+      listeners.envChanged.size +
+      listeners.runtimesChanged.size >
     0;
   if (hasListeners) ensureEventSource();
 }
@@ -440,6 +456,7 @@ type EventListeners = {
   nodeRunStart: Set<(p: NodeRunStartEvent) => void>;
   nodeRunEnd: Set<(p: NodeRunEndEvent) => void>;
   envChanged: Set<(env: Record<string, string>) => void>;
+  runtimesChanged: Set<() => void>;
 };
 
 const listeners: EventListeners = {
@@ -448,6 +465,7 @@ const listeners: EventListeners = {
   nodeRunStart: new Set(),
   nodeRunEnd: new Set(),
   envChanged: new Set(),
+  runtimesChanged: new Set(),
 };
 
 let eventSource: EventSource | null = null;
@@ -484,6 +502,9 @@ function ensureEventSource(): void {
         listeners.envChanged.forEach((cb) => cb(p));
       } catch {}
     });
+    es.addEventListener("runtimesChanged", () =>
+      listeners.runtimesChanged.forEach((cb) => cb()),
+    );
     es.onerror = () => {
       es.close();
       eventSource = null;
@@ -724,6 +745,12 @@ const api: N2nApi = {
   mcpCallTool: (server, tool, args) =>
     http("POST", "/api/mcp/call", { server, tool, args }),
   onMcpChanged: (cb) => subscribe("mcpChanged", cb),
+
+  runtimesList: () => http("GET", "/api/runtimes"),
+  runtimesInstall: async (id) => {
+    await http("POST", `/api/runtimes/${encodeURIComponent(id)}/install`);
+  },
+  onRuntimesChanged: (cb) => subscribe("runtimesChanged", cb),
 };
 
 export function getApi(): N2nApi | null {

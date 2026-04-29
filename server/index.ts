@@ -31,6 +31,7 @@ const STATE_PATH = join(N2N_DIR, "state.json");
 const HISTORY_PATH = join(N2N_DIR, "history.jsonl");
 const HISTORY_MAX_LINES = 5000;
 const MCP_SERVERS_PATH = join(N2N_DIR, "mcp-servers.json");
+const RUNTIMES_DIR = join(N2N_DIR, "runtimes");
 const BUNDLED_MODULES_DIR = join(import.meta.dir, "..", "assets", "modules");
 const PYTHON = process.env.N2N_PYTHON || "python3";
 const LLAMA_URL = process.env.N2N_LLAMA_URL || "http://localhost:8080/v1/chat/completions";
@@ -260,13 +261,21 @@ function runPythonModule(args: {
       return resolve({ ok: false, error: `manifest: ${err.message}` });
     }
     const entry = join(dir, manifest.entry || "module.py");
-    const child = spawn({
-      cmd: [PYTHON, entry],
-      cwd: dir,
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    const path = await getExtendedPath();
+    const resolvedPython = (await findInPath(PYTHON, path)) || PYTHON;
+    let child;
+    try {
+      child = spawn({
+        cmd: [resolvedPython, entry],
+        cwd: dir,
+        env: { ...process.env, PATH: path } as Record<string, string>,
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    } catch (err: any) {
+      return resolve({ ok: false, error: `spawn ${PYTHON}: ${err?.message || err}. Installe Python via l'onglet « Environnements ».` });
+    }
 
     child.stdin.write(JSON.stringify({
       inputs: args.inputs || {},
@@ -450,7 +459,8 @@ type EventName =
   | "mcpChanged"
   | "nodeRunStart"
   | "nodeRunEnd"
-  | "envChanged";
+  | "envChanged"
+  | "runtimesChanged";
 
 const eventClients = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const sseEncoder = new TextEncoder();
@@ -503,6 +513,325 @@ function attachModuleWatcher(): void {
     });
   } catch (err: any) {
     console.warn(`[n2n] module watcher disabled: ${err.message}`);
+  }
+}
+
+// ---------- external runtimes (Node, Python, …) ----------
+// MCP servers spawn child processes (npx, uvx, python3, …) that need to be
+// findable on PATH. Electron-launched apps inherit a minimal PATH on macOS /
+// Linux desktops, so npm/uv/python installs in user dirs are invisible. We
+// extend PATH with common install locations and offer a one-click installer
+// for users who don't have Node/Python yet.
+
+type RuntimeId = "node" | "python";
+
+type RuntimeArch = "x64" | "arm64";
+type RuntimePlatform = "linux" | "darwin";
+
+const NODE_VERSION = "20.18.1";
+const PY_VERSION = "3.13.1";
+const PY_RELEASE = "20250115";
+
+function detectRuntimePlatform(): { platform: RuntimePlatform; arch: RuntimeArch } | null {
+  const p = process.platform;
+  const a = process.arch;
+  if (p !== "linux" && p !== "darwin") return null;
+  if (a !== "x64" && a !== "arm64") return null;
+  return { platform: p as RuntimePlatform, arch: a as RuntimeArch };
+}
+
+const N2N_NODE_DIR = join(RUNTIMES_DIR, "node");
+const N2N_PY_DIR = join(RUNTIMES_DIR, "python");
+
+let cachedExtPath: string | null = null;
+
+async function listIfExists(dir: string): Promise<string[]> {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    return entries.filter((e) => e.isDirectory()).map((e) => join(dir, e.name));
+  } catch { return []; }
+}
+
+async function buildExtendedPath(): Promise<string> {
+  const home = homedir();
+  const parts: string[] = [];
+
+  // Our managed installs first
+  parts.push(join(N2N_NODE_DIR, "bin"));
+  parts.push(join(N2N_PY_DIR, "bin"));
+
+  // Common user-local install paths
+  parts.push(join(home, ".local", "bin"));
+  parts.push(join(home, ".bun", "bin"));
+  parts.push(join(home, ".cargo", "bin"));
+  parts.push(join(home, ".volta", "bin"));
+  parts.push(join(home, ".npm-global", "bin"));
+
+  // NVM: ~/.nvm/versions/node/<version>/bin (latest first)
+  const nvmDirs = (await listIfExists(join(home, ".nvm", "versions", "node")))
+    .sort()
+    .reverse()
+    .map((d) => join(d, "bin"));
+  parts.push(...nvmDirs);
+
+  // pyenv shims
+  const pyenvShims = join(home, ".pyenv", "shims");
+  if (await exists(pyenvShims)) parts.push(pyenvShims);
+
+  // System paths (Homebrew + standard)
+  parts.push("/opt/homebrew/bin", "/opt/homebrew/sbin");
+  parts.push("/home/linuxbrew/.linuxbrew/bin", "/home/linuxbrew/.linuxbrew/sbin");
+  parts.push("/usr/local/bin", "/usr/local/sbin");
+  parts.push("/usr/bin", "/usr/sbin", "/bin", "/sbin");
+
+  // Existing PATH (last so we don't override our managed installs)
+  if (process.env.PATH) parts.push(process.env.PATH);
+
+  // De-duplicate while preserving order
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const segment of parts) {
+    for (const p of segment.split(":")) {
+      if (p && !seen.has(p)) { seen.add(p); out.push(p); }
+    }
+  }
+  return out.join(":");
+}
+
+async function getExtendedPath(): Promise<string> {
+  if (!cachedExtPath) cachedExtPath = await buildExtendedPath();
+  return cachedExtPath;
+}
+
+function invalidateExtendedPath(): void {
+  cachedExtPath = null;
+}
+
+async function findInPath(cmd: string, path: string): Promise<string | null> {
+  if (cmd.includes("/")) {
+    return (await exists(cmd)) ? cmd : null;
+  }
+  for (const dir of path.split(":")) {
+    if (!dir) continue;
+    const full = join(dir, cmd);
+    if (await exists(full)) return full;
+  }
+  return null;
+}
+
+async function getCmdVersion(cmd: string, args: string[] = ["--version"]): Promise<string | null> {
+  try {
+    const path = await getExtendedPath();
+    const resolved = await findInPath(cmd, path);
+    if (!resolved) return null;
+    const proc = spawn({
+      cmd: [resolved, ...args],
+      env: { ...process.env, PATH: path } as Record<string, string>,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [out, , code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (code !== 0) return null;
+    return out.trim() || null;
+  } catch { return null; }
+}
+
+type RuntimeStatus = {
+  id: RuntimeId;
+  label: string;
+  description: string;
+  installed: boolean;
+  installable: boolean;
+  installing: boolean;
+  error: string | null;
+  log: string;
+  details: { name: string; path: string | null; version: string | null }[];
+};
+
+type InstallState = {
+  installing: boolean;
+  error: string | null;
+  log: string;
+};
+
+const installStates = new Map<RuntimeId, InstallState>();
+
+function getInstallState(id: RuntimeId): InstallState {
+  if (!installStates.has(id)) {
+    installStates.set(id, { installing: false, error: null, log: "" });
+  }
+  return installStates.get(id)!;
+}
+
+function appendInstallLog(id: RuntimeId, line: string): void {
+  const s = getInstallState(id);
+  const ts = new Date().toISOString().slice(11, 19);
+  s.log += `[${ts}] ${line}\n`;
+  // Cap the log so it doesn't grow forever
+  if (s.log.length > 16000) s.log = s.log.slice(-12000);
+  broadcast("runtimesChanged");
+}
+
+async function detectNode(): Promise<RuntimeStatus["details"]> {
+  const path = await getExtendedPath();
+  const out: RuntimeStatus["details"] = [];
+  for (const cmd of ["node", "npx"]) {
+    const resolved = await findInPath(cmd, path);
+    const version = resolved ? await getCmdVersion(cmd) : null;
+    out.push({ name: cmd, path: resolved, version });
+  }
+  return out;
+}
+
+async function detectPython(): Promise<RuntimeStatus["details"]> {
+  const path = await getExtendedPath();
+  const out: RuntimeStatus["details"] = [];
+  for (const cmd of ["python3", "uv", "uvx"]) {
+    const resolved = await findInPath(cmd, path);
+    const version = resolved ? await getCmdVersion(cmd) : null;
+    out.push({ name: cmd, path: resolved, version });
+  }
+  return out;
+}
+
+async function listRuntimes(): Promise<RuntimeStatus[]> {
+  const out: RuntimeStatus[] = [];
+  const platform = detectRuntimePlatform();
+
+  for (const id of ["node", "python"] as RuntimeId[]) {
+    const state = getInstallState(id);
+    const details = id === "node" ? await detectNode() : await detectPython();
+    // Node is "installed" if both node + npx are findable.
+    // Python is "installed" if python3 is findable (uv/uvx are bonus).
+    const installed = id === "node"
+      ? details.every((d) => d.path)
+      : details[0]?.path != null;
+    out.push({
+      id,
+      label: id === "node" ? "Node.js" : "Python",
+      description: id === "node"
+        ? "Required for npx-based MCP servers (filesystem, github, slack, …)."
+        : "Required for python3 modules and uvx-based MCP servers (git, time, sqlite, …).",
+      installed,
+      installable: !!platform,
+      installing: state.installing,
+      error: state.error,
+      log: state.log,
+      details,
+    });
+  }
+
+  return out;
+}
+
+// ---- install: download a tarball, extract via system tar ----
+
+async function downloadFile(id: RuntimeId, url: string, target: string): Promise<void> {
+  appendInstallLog(id, `Téléchargement de ${url}`);
+  const resp = await fetch(url, { redirect: "follow" });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} sur ${url}`);
+  const buf = new Uint8Array(await resp.arrayBuffer());
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, buf);
+  appendInstallLog(id, `Téléchargé ${(buf.length / 1024 / 1024).toFixed(1)} Mo dans ${target}`);
+}
+
+async function extractTarGz(id: RuntimeId, archive: string, dest: string, stripComponents = 1): Promise<void> {
+  appendInstallLog(id, `Extraction dans ${dest}`);
+  await mkdir(dest, { recursive: true });
+  const proc = spawn({
+    cmd: ["tar", "-xzf", archive, "-C", dest, `--strip-components=${stripComponents}`],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [, errOut, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (code !== 0) throw new Error(`tar a échoué (code ${code}): ${errOut.trim()}`);
+}
+
+async function installNode(): Promise<void> {
+  const id: RuntimeId = "node";
+  const plat = detectRuntimePlatform();
+  if (!plat) throw new Error(`Plateforme non supportée: ${process.platform}/${process.arch}`);
+
+  const arch = plat.arch === "arm64" ? "arm64" : "x64";
+  const suffix = plat.platform === "darwin" ? `darwin-${arch}` : `linux-${arch}`;
+  const url = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${suffix}.tar.gz`;
+  const tmp = join(RUNTIMES_DIR, `node-${NODE_VERSION}.tar.gz`);
+
+  await mkdir(RUNTIMES_DIR, { recursive: true });
+  await downloadFile(id, url, tmp);
+  await rm(N2N_NODE_DIR, { recursive: true, force: true });
+  await extractTarGz(id, tmp, N2N_NODE_DIR, 1);
+  try { await unlink(tmp); } catch {}
+
+  invalidateExtendedPath();
+  appendInstallLog(id, `Node.js v${NODE_VERSION} installé dans ${N2N_NODE_DIR}`);
+}
+
+async function installPython(): Promise<void> {
+  const id: RuntimeId = "python";
+  const plat = detectRuntimePlatform();
+  if (!plat) throw new Error(`Plateforme non supportée: ${process.platform}/${process.arch}`);
+
+  // python-build-standalone naming: cpython-<py>+<release>-<triplet>-install_only.tar.gz
+  let triplet: string;
+  if (plat.platform === "linux") {
+    triplet = plat.arch === "arm64"
+      ? "aarch64-unknown-linux-gnu"
+      : "x86_64-unknown-linux-gnu";
+  } else {
+    triplet = plat.arch === "arm64"
+      ? "aarch64-apple-darwin"
+      : "x86_64-apple-darwin";
+  }
+  const url = `https://github.com/astral-sh/python-build-standalone/releases/download/${PY_RELEASE}/cpython-${PY_VERSION}+${PY_RELEASE}-${triplet}-install_only.tar.gz`;
+  const tmp = join(RUNTIMES_DIR, `python-${PY_VERSION}.tar.gz`);
+
+  await mkdir(RUNTIMES_DIR, { recursive: true });
+  await downloadFile(id, url, tmp);
+  await rm(N2N_PY_DIR, { recursive: true, force: true });
+  // The archive contains a top-level "python/" folder; strip it so bin/ ends
+  // up directly under N2N_PY_DIR.
+  await extractTarGz(id, tmp, N2N_PY_DIR, 1);
+  try { await unlink(tmp); } catch {}
+
+  invalidateExtendedPath();
+  appendInstallLog(id, `Python ${PY_VERSION} installé dans ${N2N_PY_DIR}`);
+}
+
+async function startRuntimeInstall(id: RuntimeId): Promise<void> {
+  const state = getInstallState(id);
+  if (state.installing) return;
+  state.installing = true;
+  state.error = null;
+  state.log = "";
+  broadcast("runtimesChanged");
+
+  const run = id === "node" ? installNode : installPython;
+  try {
+    appendInstallLog(id, `Installation de ${id} démarrée`);
+    await run();
+    appendInstallLog(id, `Installation terminée`);
+  } catch (e: any) {
+    state.error = e?.message || String(e);
+    appendInstallLog(id, `Erreur: ${state.error}`);
+  } finally {
+    state.installing = false;
+    invalidateExtendedPath();
+    broadcast("runtimesChanged");
+    // Restart MCP servers automatically — chances are some of them depend on
+    // the runtime we just installed and were stuck on "spawn npx not found".
+    if (!state.error) {
+      startAllMcpServers().catch(() => undefined);
+    }
   }
 }
 
@@ -1276,6 +1605,17 @@ async function handleWebhook(req: Request, route: string): Promise<Response> {
 type McpConfig = { command: string; args: string[]; env: Record<string, string> };
 type McpToolSpec = { name: string; description?: string; inputSchema?: any };
 
+function mcpRuntimeHint(command: string): string | null {
+  const c = command.toLowerCase();
+  if (c === "npx" || c === "node" || c === "npm") {
+    return `Installe Node.js depuis l'onglet « Environnements » (icône à côté des paramètres).`;
+  }
+  if (c === "python" || c === "python3" || c === "uv" || c === "uvx") {
+    return `Installe Python depuis l'onglet « Environnements » (icône à côté des paramètres).`;
+  }
+  return null;
+}
+
 class McpClient {
   name: string;
   config: McpConfig;
@@ -1293,10 +1633,21 @@ class McpClient {
   }
 
   async start(): Promise<boolean> {
+    const path = await getExtendedPath();
+    const resolved = (await findInPath(this.config.command, path)) || this.config.command;
+    if (resolved === this.config.command && !this.config.command.includes("/")) {
+      // We didn't find it; check if it's a runtime we know how to install.
+      const guidance = mcpRuntimeHint(this.config.command);
+      if (guidance) {
+        this.error = `spawn: "${this.config.command}" introuvable. ${guidance}`;
+        broadcast("mcpChanged");
+        return false;
+      }
+    }
     try {
       this.proc = spawn({
-        cmd: [this.config.command, ...(this.config.args || [])],
-        env: { ...process.env, ...(this.config.env || {}) } as Record<string, string>,
+        cmd: [resolved, ...(this.config.args || [])],
+        env: { ...process.env, ...(this.config.env || {}), PATH: path } as Record<string, string>,
         stdin: "pipe", stdout: "pipe", stderr: "pipe",
       });
     } catch (err: any) {
@@ -1818,6 +2169,17 @@ const ROUTES: RouteMatch[] = [
     delete mcpConfigCache!.servers[p.name];
     await saveMcpConfig();
     await stopMcpServer(p.name);
+    return json({ ok: true });
+  }),
+
+  // Runtimes (Node, Python, …): detect + one-click install
+  route("GET", "/api/runtimes", async () => json(await listRuntimes())),
+  route("POST", "/api/runtimes/:id/install", async (_r, p) => {
+    if (p.id !== "node" && p.id !== "python") return err("Runtime inconnu", 404);
+    const state = getInstallState(p.id);
+    if (state.installing) return json({ ok: true, alreadyRunning: true });
+    // Run install in background — long-running operation, don't block HTTP.
+    void startRuntimeInstall(p.id);
     return json({ ok: true });
   }),
 

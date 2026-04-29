@@ -12,6 +12,8 @@ type Props = {
   onReset: () => void;
   onAutoLayout: () => void;
   onOpenSettings: () => void;
+  onOpenRuntimes: () => void;
+  runtimesAttention?: boolean;
   projectSlot?: ReactNode;
 };
 
@@ -24,6 +26,8 @@ export function Toolbar({
   onReset,
   onAutoLayout,
   onOpenSettings,
+  onOpenRuntimes,
+  runtimesAttention,
   projectSlot,
 }: Props) {
   return (
@@ -99,6 +103,36 @@ export function Toolbar({
           <Icon path="M12 5v14M5 12h14" />
         </ToolButton>
         </div>
+        <button
+          onClick={onOpenRuntimes}
+          title="Environnements (Node.js, Python, …)"
+          className="relative flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 text-slate-600 transition hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-800"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+            <path d="m7.5 4.21 4.5 2.6 4.5-2.6" />
+            <path d="m7.5 19.79V14.6L3 12" />
+            <path d="m21 12-4.5 2.6v5.19" />
+            <path d="M3.27 6.96 12 12.01l8.73-5.05" />
+            <path d="M12 22.08V12" />
+          </svg>
+          {runtimesAttention && (
+            <span
+              className="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5 items-center justify-center rounded-full bg-rose-500 ring-2 ring-white dark:ring-slate-900"
+              title="Runtime manquant"
+            />
+          )}
+        </button>
         <button
           onClick={onOpenSettings}
           title="Paramètres de connexion serveur"

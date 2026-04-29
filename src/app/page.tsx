@@ -10,6 +10,7 @@ import { McpModal } from "@/components/ui/McpModal";
 import { ModulePalette } from "@/components/ui/ModulePalette";
 import { ProjectMenu } from "@/components/ui/ProjectMenu";
 import { PromptModal } from "@/components/ui/PromptModal";
+import { RuntimeModal } from "@/components/ui/RuntimeModal";
 import { ServerPicker } from "@/components/ui/ServerPicker";
 import { StatusBar } from "@/components/ui/StatusBar";
 import { Toolbar } from "@/components/ui/Toolbar";
@@ -195,6 +196,8 @@ function Workspace({ onOpenConnect }: { onOpenConnect: () => void }) {
   const [configuringId, setConfiguringId] = useState<string | null>(null);
   const [envOpen, setEnvOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
+  const [runtimeOpen, setRuntimeOpen] = useState(false);
+  const [runtimesAttention, setRuntimesAttention] = useState(false);
 
   const [chatOpen, setChatOpen] = useState(false);
   const [context, setContext] = useState<ContextState | null>(null);
@@ -347,6 +350,26 @@ function Workspace({ onOpenConnect }: { onOpenConnect: () => void }) {
   useEffect(() => {
     setRunningIds(new Set());
   }, [activeProjectId]);
+
+  // Surface a red dot on the toolbar when a runtime (Node, Python) is missing.
+  useEffect(() => {
+    const api = getApi();
+    if (!api) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const list = await api.runtimesList();
+        if (cancelled) return;
+        setRuntimesAttention(list.some((r) => !r.installed && !r.installing));
+      } catch {}
+    };
+    void refresh();
+    const off = api.onRuntimesChanged(() => void refresh());
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, []);
 
   const openFolder = useCallback(() => {
     const api = getApi();
@@ -784,6 +807,8 @@ function Workspace({ onOpenConnect }: { onOpenConnect: () => void }) {
           onReset={reset}
           onAutoLayout={runAutoLayout}
           onOpenSettings={onOpenConnect}
+          onOpenRuntimes={() => setRuntimeOpen(true)}
+          runtimesAttention={runtimesAttention}
           projectSlot={
             <ProjectMenu
               projects={projects}
@@ -888,6 +913,9 @@ function Workspace({ onOpenConnect }: { onOpenConnect: () => void }) {
           />
         )}
         {mcpOpen && <McpModal onClose={() => setMcpOpen(false)} />}
+        {runtimeOpen && (
+          <RuntimeModal onClose={() => setRuntimeOpen(false)} />
+        )}
         {context && (
           <ContextMenu
             x={context.x}
