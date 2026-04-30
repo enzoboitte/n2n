@@ -10,6 +10,8 @@ type Props = {
   initialParams: Record<string, unknown>;
   /** Letters bound to incoming edges of the configured node, in order. */
   availableLetters?: string[];
+  /** Optional preview text per letter (e.g. socket name). */
+  letterHints?: Record<string, string>;
   onSave: (params: Record<string, unknown>) => void;
   onClose: () => void;
 };
@@ -18,6 +20,7 @@ export function ConfigModal({
   module,
   initialParams,
   availableLetters,
+  letterHints,
   onSave,
   onClose,
 }: Props) {
@@ -91,6 +94,7 @@ export function ConfigModal({
                   onChange={(v) => update(p.name, v)}
                   allParams={draft}
                   availableLetters={availableLetters}
+                  letterHints={letterHints}
                 />
               </div>
             );

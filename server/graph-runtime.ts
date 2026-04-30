@@ -31,7 +31,11 @@ import {
 } from "./file-runtime.ts";
 import { wsSend, wsClose } from "./ws-server.ts";
 import { runHttpStream } from "./http-stream-runtime.ts";
-import { httpSend, httpEnd, type HttpSendOpts } from "./http-defer.ts";
+import { httpSend, httpEnd, hasDeferredHttp, type HttpSendOpts } from "./http-defer.ts";
+import { runHash, runRandom, runEncode, runValidate } from "./crypto-runtime.ts";
+import { runBarrier } from "./barrier-runtime.ts";
+import { runDateMath } from "./date-runtime.ts";
+import { runLlmChat } from "./llm-runtime.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function looksLikeCid(s: unknown): s is string {
@@ -41,20 +45,29 @@ function resolveConnectionId(
   inputs: Record<string, unknown>,
   substituted: Record<string, unknown>,
   ctx: RunCtx,
+  isHttp: boolean,
 ): string {
   // Try the wired edge first, then the (templated) param, then the
   // trigger that fired this run. Each candidate is validated against the
   // UUID / "*" shape so junk values (e.g. an upstream `client` object
   // accidentally wired into `connection_id`) fall through to the
   // sensible fallback instead of being passed to the registry as-is.
+  //
+  // For HTTP (rest-send/rest-end), additionally validate that the cid
+  // actually points to a live deferred connection — otherwise a UUID
+  // emitted by an unrelated module (e.g. random) would hijack the slot
+  // and the actual trigger response would time out.
   const inputCid = inputs.connection_id;
   const paramCid = substituted.connection_id;
-  if (looksLikeCid(inputCid)) return inputCid;
-  if (looksLikeCid(paramCid)) return paramCid;
-  if (looksLikeCid(ctx.triggerConnectionId)) return ctx.triggerConnectionId;
+  const ok = (v: unknown): v is string =>
+    looksLikeCid(v) && (!isHttp || v === "*" || hasDeferredHttp(v));
+  if (ok(inputCid)) return inputCid;
+  if (ok(paramCid)) return paramCid;
+  if (ok(ctx.triggerConnectionId)) return ctx.triggerConnectionId;
   // Last resort: take the param string as-is even if it doesn't match
   // the shape — preserves user overrides for edge cases (e.g. a server
-  // that issues non-UUID ids).
+  // that issues non-UUID ids). Skip the registry check here so manual
+  // overrides still work for tests.
   if (typeof paramCid === "string" && paramCid.trim()) return paramCid.trim();
   if (typeof inputCid === "string" && inputCid.trim()) return inputCid.trim();
   return "";
@@ -109,7 +122,7 @@ async function runRestSend(
   isEnd: boolean,
   ctx: RunCtx,
 ): Promise<RunResult> {
-  const cid = resolveConnectionId(inputs, substituted, ctx);
+  const cid = resolveConnectionId(inputs, substituted, ctx, true);
   if (!cid) {
     return { ok: false, error: `${isEnd ? "rest-end" : "rest-send"}: connection_id introuvable (pas d'arête, pas de param, pas de trigger HTTP)` };
   }
@@ -321,7 +334,7 @@ export async function runNodeInCtx(ctx: RunCtx, nodeId: string): Promise<RunResu
         const sendRes = await runRestSend(inputs, substituted, letters, true, ctx);
         result = sendRes;
       } else if (node.moduleId === "ws-close") {
-        const cid = resolveConnectionId(inputs, substituted, ctx);
+        const cid = resolveConnectionId(inputs, substituted, ctx, false);
         if (!cid) {
           result = { ok: false, error: "ws-close: connection_id requis" };
         } else {
@@ -338,7 +351,7 @@ export async function runNodeInCtx(ctx: RunCtx, nodeId: string): Promise<RunResu
       } else if (node.moduleId === "ws-send") {
         // Resolution: validated edge → validated param → trigger ctx →
         // raw param/edge fallback. See resolveConnectionId.
-        const cid = resolveConnectionId(inputs, substituted, ctx);
+        const cid = resolveConnectionId(inputs, substituted, ctx, false);
         let raw: unknown = inputs.data;
         if (raw === null || raw === undefined) raw = substituted.data;
         const payload = typeof raw === "string"
@@ -584,6 +597,20 @@ export async function runNodeInCtx(ctx: RunCtx, nodeId: string): Promise<RunResu
         result = await runFileMkdir(substituted);
       } else if (node.moduleId === "http-stream") {
         result = await runHttpStream(substituted, inputs);
+      } else if (node.moduleId === "hash") {
+        result = runHash(inputs, substituted);
+      } else if (node.moduleId === "random") {
+        result = runRandom(substituted);
+      } else if (node.moduleId === "encode") {
+        result = runEncode(inputs, substituted);
+      } else if (node.moduleId === "validate") {
+        result = await runValidate(inputs, substituted);
+      } else if (node.moduleId === "barrier") {
+        result = runBarrier(inputs, letters, substituted, ctx);
+      } else if (node.moduleId === "date-math") {
+        result = runDateMath(inputs, substituted);
+      } else if (node.moduleId === "llm-chat") {
+        result = await runLlmChat(inputs, substituted, ctx.env);
       } else {
         const py = await runPythonModule({
           id: node.moduleId,

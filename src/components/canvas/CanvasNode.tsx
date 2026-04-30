@@ -33,6 +33,8 @@ type Props = {
   running: boolean;
   /** Letters (a, b, c…) currently bound to incoming edges of this node. */
   availableLetters: string[];
+  /** Optional human-friendly hint per letter (typically the upstream socket name). */
+  letterHints?: Record<string, string>;
   onSelect: (id: string | null, additive?: boolean) => void;
   onMove: (ids: string[], dx: number, dy: number) => void;
   onStartConnect: (id: string, sourceSocket: string, e: React.MouseEvent) => void;
@@ -51,6 +53,7 @@ export function CanvasNode({
   isSpaceDown,
   running,
   availableLetters,
+  letterHints,
   onSelect,
   onMove,
   onStartConnect,
@@ -304,6 +307,7 @@ export function CanvasNode({
                     compact
                     allParams={node.params}
                     availableLetters={availableLetters}
+                    letterHints={letterHints}
                   />
                 </div>
               ))}

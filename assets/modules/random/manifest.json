@@ -1,0 +1,51 @@
+{
+  "id": "random",
+  "name": "Aléatoire",
+  "description": "Génère une valeur aléatoire. Modes : uuid (UUID v4), int (entier entre min/max), float (réel entre min/max), string (chaîne hex de N caractères), choice (choisit dans une liste). Idéal pour des IDs, jetons, tirages au sort.",
+  "version": "0.1.0",
+  "color": "#84cc16",
+  "configurable": true,
+  "inputs": [],
+  "outputs": [
+    { "name": "value", "label": "Valeur tirée", "type": "any" }
+  ],
+  "params": [
+    {
+      "name": "mode",
+      "label": "Mode",
+      "type": "select",
+      "options": ["uuid", "int", "float", "string", "choice"],
+      "default": "uuid"
+    },
+    {
+      "name": "min",
+      "label": "Min (inclus)",
+      "type": "number",
+      "default": "0",
+      "showIf": { "mode": ["int", "float"] }
+    },
+    {
+      "name": "max",
+      "label": "Max (inclus pour int, exclu pour float)",
+      "type": "number",
+      "default": "100",
+      "showIf": { "mode": ["int", "float"] }
+    },
+    {
+      "name": "length",
+      "label": "Longueur (caractères hex)",
+      "type": "number",
+      "default": "16",
+      "min": 1,
+      "max": 256,
+      "showIf": { "mode": ["string"] }
+    },
+    {
+      "name": "choices",
+      "label": "Liste de choix (un par ligne, ou JSON [\"a\",\"b\"])",
+      "type": "text",
+      "default": "",
+      "showIf": { "mode": ["choice"] }
+    }
+  ]
+}

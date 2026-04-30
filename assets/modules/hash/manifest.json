@@ -1,0 +1,37 @@
+{
+  "id": "hash",
+  "name": "Hash",
+  "description": "Calcule un hash de la valeur entrante. Algorithmes : md5, sha1, sha256, sha512, hmac-sha256, hmac-sha512. Sortie en hex + base64. Pour HMAC, fournis le secret ; sinon il est ignoré.",
+  "version": "0.1.0",
+  "color": "#0891b2",
+  "configurable": true,
+  "inputs": [
+    { "name": "data", "label": "Donnée à hasher", "type": "any" }
+  ],
+  "outputs": [
+    { "name": "hex", "label": "Hash (hex)", "type": "string" },
+    { "name": "base64", "label": "Hash (base64)", "type": "string" }
+  ],
+  "params": [
+    {
+      "name": "algorithm",
+      "label": "Algorithme",
+      "type": "select",
+      "options": ["md5", "sha1", "sha256", "sha512", "hmac-sha256", "hmac-sha512"],
+      "default": "sha256"
+    },
+    {
+      "name": "data",
+      "label": "Donnée (utilisée si pas d'arête entrante)",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "name": "secret",
+      "label": "Secret HMAC",
+      "type": "string",
+      "default": "",
+      "showIf": { "algorithm": ["hmac-sha256", "hmac-sha512"] }
+    }
+  ]
+}

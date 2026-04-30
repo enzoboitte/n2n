@@ -1,0 +1,42 @@
+{
+  "id": "barrier",
+  "name": "Barrière (collecter N)",
+  "description": "Accumule des valeurs pour une clé donnée jusqu'à atteindre un nombre attendu, puis émet la liste complète sur « complete ». Avant ça, émet la progression sur « progress » (count actuel) et la liste partielle sur « partial ». Idéal pour : un client qui envoie 10 paquets, on veut traiter une fois les 10 reçus. État stocké en mémoire avec TTL d'expiration. Utilise le même paramètre « key » sur tous les triggers du même groupe.",
+  "version": "0.1.0",
+  "color": "#7c3aed",
+  "configurable": true,
+  "inputs": [
+    { "name": "value", "label": "Valeur à accumuler", "type": "any" }
+  ],
+  "outputs": [
+    { "name": "complete", "label": "Liste complète (au seuil)", "type": "any" },
+    { "name": "progress", "label": "Compteur actuel", "type": "number" },
+    { "name": "partial", "label": "Liste partielle (en cours)", "type": "any" },
+    { "name": "pendingCids", "label": "ConnectionIds en attente (HTTP)", "type": "any" }
+  ],
+  "params": [
+    {
+      "name": "key",
+      "label": "Clé de corrélation (templated, ex. {a.session})",
+      "type": "string",
+      "default": "default"
+    },
+    {
+      "name": "expected",
+      "label": "Nombre attendu",
+      "type": "number",
+      "default": "10",
+      "min": 1,
+      "max": 10000,
+      "step": 1
+    },
+    {
+      "name": "ttl_ms",
+      "label": "TTL d'expiration (ms inactif avant purge)",
+      "type": "number",
+      "default": "60000",
+      "min": 100,
+      "step": 100
+    }
+  ]
+}

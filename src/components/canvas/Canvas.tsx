@@ -159,13 +159,15 @@ export function Canvas({
         }}
       >
         {nodes.map((node) => {
-          const inboundCount = edges.reduce(
-            (sum, e) => (e.target === node.id ? sum + 1 : sum),
-            0,
-          );
-          const letters = Array.from({ length: inboundCount }, (_, i) =>
-            indexToLetter(i),
-          );
+          const inbound = edges.filter((e) => e.target === node.id);
+          const letters = inbound.map((_, i) => indexToLetter(i));
+          // Tooltip hint per letter — surfaces the upstream socket name
+          // in the variable picker so users can tell `{a}` (e.g. params)
+          // from `{b}` (e.g. client) at a glance.
+          const letterHints: Record<string, string> = {};
+          inbound.forEach((e, i) => {
+            letterHints[indexToLetter(i)] = e.sourceSocket || "";
+          });
           return (
           <CanvasNode
             key={node.id}
@@ -177,6 +179,7 @@ export function Canvas({
             isSpaceDown={isSpaceDown}
             running={runningIds.has(node.id)}
             availableLetters={letters}
+            letterHints={letterHints}
             onSelect={onSelect}
             onMove={onMove}
             onStartConnect={onStartConnect}

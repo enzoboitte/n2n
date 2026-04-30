@@ -219,6 +219,8 @@ export const KNOWN_NPM_PKGS: Array<{
     description: "Client Redis (sql-query redis : commandes brutes JSON)." },
   { id: "npm-duckdb", pkg: "@duckdb/node-api", label: "DuckDB",
     description: "Base analytique in-process (sql-query duckdb)." },
+  { id: "npm-ajv", pkg: "ajv", label: "ajv (JSON Schema)",
+    description: "Validateur JSON Schema (utilisé par le module validate)." },
 ];
 
 async function detectNpmPkg(pkg: string): Promise<RuntimeStatus["details"]> {

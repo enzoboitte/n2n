@@ -897,9 +897,13 @@ function Workspace({ onOpenConnect }: { onOpenConnect: () => void }) {
           <ConfigModal
             module={configuringModule}
             initialParams={configuringNode.params}
-            availableLetters={Array.from(
-              { length: edges.filter((e) => e.target === configuringNode.id).length },
-              (_, i) => indexToLetter(i),
+            availableLetters={edges
+              .filter((e) => e.target === configuringNode.id)
+              .map((_, i) => indexToLetter(i))}
+            letterHints={Object.fromEntries(
+              edges
+                .filter((e) => e.target === configuringNode.id)
+                .map((e, i) => [indexToLetter(i), e.sourceSocket || ""]),
             )}
             onSave={(params) => setParams(configuringNode.id, params)}
             onClose={() => setConfiguringId(null)}

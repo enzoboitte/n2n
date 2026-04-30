@@ -1,0 +1,36 @@
+{
+  "id": "encode",
+  "name": "Encoder / décoder",
+  "description": "Encode ou décode une valeur. Formats : base64, base64url (URL-safe), url (percent-encoding), hex. Direction « encode » prend une string et la transforme ; « decode » fait l'inverse.",
+  "version": "0.1.0",
+  "color": "#f97316",
+  "configurable": true,
+  "inputs": [
+    { "name": "data", "label": "Donnée", "type": "any" }
+  ],
+  "outputs": [
+    { "name": "value", "label": "Résultat", "type": "string" }
+  ],
+  "params": [
+    {
+      "name": "format",
+      "label": "Format",
+      "type": "select",
+      "options": ["base64", "base64url", "url", "hex"],
+      "default": "base64"
+    },
+    {
+      "name": "direction",
+      "label": "Direction",
+      "type": "select",
+      "options": ["encode", "decode"],
+      "default": "encode"
+    },
+    {
+      "name": "data",
+      "label": "Donnée (utilisée si pas d'arête entrante)",
+      "type": "text",
+      "default": ""
+    }
+  ]
+}

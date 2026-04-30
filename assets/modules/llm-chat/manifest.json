@@ -1,0 +1,93 @@
+{
+  "id": "llm-chat",
+  "name": "LLM (chat)",
+  "description": "Appelle une API d'IA conversationnelle. Compatible OpenAI Chat Completions (OpenAI, OpenRouter, Mistral, Groq, DeepSeek, xAI Grok, Together, Ollama local, llama.cpp local) + Anthropic Messages API + Google Gemini API. Le modèle, la clé d'API et l'URL de base sont configurables. Renvoie le texte de la réponse + le compte de tokens.",
+  "version": "0.1.0",
+  "color": "#9333ea",
+  "configurable": true,
+  "inputs": [
+    { "name": "prompt", "label": "Prompt utilisateur (string ou array de messages)", "type": "any" }
+  ],
+  "outputs": [
+    { "name": "text", "label": "Texte de la réponse", "type": "string" },
+    { "name": "usage", "label": "Tokens utilisés {prompt, completion, total}", "type": "any" },
+    { "name": "raw", "label": "Réponse brute API", "type": "any" }
+  ],
+  "params": [
+    {
+      "name": "provider",
+      "label": "Fournisseur",
+      "type": "select",
+      "options": [
+        "openai",
+        "anthropic",
+        "google",
+        "openrouter",
+        "mistral",
+        "groq",
+        "deepseek",
+        "xai",
+        "together",
+        "ollama",
+        "llama-cpp",
+        "custom"
+      ],
+      "default": "openai"
+    },
+    {
+      "name": "model",
+      "label": "Modèle (ex. gpt-4o-mini, claude-opus-4-7, gemini-2.5-pro)",
+      "type": "string",
+      "default": "gpt-4o-mini"
+    },
+    {
+      "name": "api_key_env",
+      "label": "Variable d'env contenant la clé API (ex. OPENAI_API_KEY)",
+      "type": "env-key",
+      "default": "OPENAI_API_KEY"
+    },
+    {
+      "name": "base_url",
+      "label": "URL de base (override — vide = défaut du fournisseur)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "system",
+      "label": "System prompt (optionnel)",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "name": "prompt",
+      "label": "Prompt (utilisé si pas d'arête entrante)",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "name": "temperature",
+      "label": "Température",
+      "type": "number",
+      "default": "0.7",
+      "min": 0,
+      "max": 2,
+      "step": 0.1
+    },
+    {
+      "name": "max_tokens",
+      "label": "Max tokens (réponse)",
+      "type": "number",
+      "default": "1024",
+      "min": 1,
+      "step": 1
+    },
+    {
+      "name": "timeout_ms",
+      "label": "Timeout (ms)",
+      "type": "number",
+      "default": "60000",
+      "min": 1000,
+      "step": 1000
+    }
+  ]
+}

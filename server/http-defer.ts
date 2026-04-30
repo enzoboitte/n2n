@@ -236,6 +236,14 @@ export function tearDownDeferredHttp(): void {
   deferredConns.clear();
 }
 
+/** Cheap membership check used by graph-runtime to validate that a UUID
+ *  it pulled from an edge is *actually* a live deferred connection (and
+ *  not e.g. a random module's output that happens to look like a UUID).
+ */
+export function hasDeferredHttp(connectionId: string): boolean {
+  return deferredConns.has(connectionId);
+}
+
 /** Diagnostics. */
 export function listDeferredHttp(): Array<{
   connectionId: string;

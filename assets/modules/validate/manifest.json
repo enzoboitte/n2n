@@ -1,0 +1,24 @@
+{
+  "id": "validate",
+  "name": "Valider (JSON Schema)",
+  "description": "Valide la donnée entrante contre un JSON Schema (draft 2020-12 via ajv). Sortie « valid » porte la valeur si elle passe, « invalid » la porte sinon ; « errors » liste les violations. Nécessite le package npm `ajv` (Environnements > installer).",
+  "version": "0.1.0",
+  "color": "#dc2626",
+  "configurable": true,
+  "inputs": [
+    { "name": "data", "label": "Donnée à valider", "type": "any" }
+  ],
+  "outputs": [
+    { "name": "valid", "label": "Si valide (passe la donnée)", "type": "any" },
+    { "name": "invalid", "label": "Si invalide (passe la donnée)", "type": "any" },
+    { "name": "errors", "label": "Liste des erreurs", "type": "any" }
+  ],
+  "params": [
+    {
+      "name": "schema",
+      "label": "JSON Schema (objet ou string JSON)",
+      "type": "text",
+      "default": "{\n  \"type\": \"object\",\n  \"required\": [\"name\"],\n  \"properties\": {\n    \"name\": { \"type\": \"string\" },\n    \"age\": { \"type\": \"integer\", \"minimum\": 0 }\n  }\n}"
+    }
+  ]
+}

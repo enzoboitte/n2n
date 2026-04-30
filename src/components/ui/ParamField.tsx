@@ -1,9 +1,11 @@
 "use client";
 
+import { useRef } from "react";
 import { useEnvVars } from "@/contexts/EnvContext";
 import { useMcpServersList } from "@/contexts/McpContext";
 import { useProjectsList } from "@/contexts/ProjectsContext";
 import type { ParamSpec } from "@/lib/types";
+import { VariablePicker } from "./VariablePicker";
 
 type Props = {
   spec: ParamSpec;
@@ -16,7 +18,40 @@ type Props = {
   /** Letters available on this node (one per incoming edge, in order).
    *  Drives the "letter" param type dropdown (e.g. picker). */
   availableLetters?: string[];
+  /** Optional preview text per letter, e.g. "params" or "json". Surfaced
+   *  in the variable picker so users can tell `{a}` from `{b}`. */
+  letterHints?: Record<string, string>;
 };
+
+/**
+ * Insert `token` at the current cursor position (or selection range) of
+ * the given input/textarea, then call `onChange` with the spliced value
+ * and re-focus the field. Used by the variable picker.
+ */
+function insertAtCursor(
+  el: HTMLInputElement | HTMLTextAreaElement | null,
+  current: string,
+  token: string,
+  onChange: (next: string) => void,
+): void {
+  if (!el) {
+    onChange(current + token);
+    return;
+  }
+  const start = el.selectionStart ?? current.length;
+  const end = el.selectionEnd ?? current.length;
+  const next = current.slice(0, start) + token + current.slice(end);
+  onChange(next);
+  // Re-focus and place cursor after the inserted token on next tick so
+  // React has applied the new value before we set the selection.
+  requestAnimationFrame(() => {
+    try {
+      el.focus();
+      const pos = start + token.length;
+      el.setSelectionRange(pos, pos);
+    } catch { /* element may have unmounted */ }
+  });
+}
 
 export function ParamField({
   spec,
@@ -25,10 +60,20 @@ export function ParamField({
   compact = false,
   allParams,
   availableLetters,
+  letterHints,
 }: Props) {
   const inputClass = `w-full rounded border border-slate-200 bg-white px-2 ${
     compact ? "py-1 text-xs" : "py-1.5 text-sm"
   } outline-none focus:border-indigo-500 dark:border-slate-700 dark:bg-slate-900`;
+  const stringRef = useRef<HTMLInputElement | null>(null);
+  const textRef = useRef<HTMLTextAreaElement | null>(null);
+  const numberRef = useRef<HTMLInputElement | null>(null);
+  const insertVar = (
+    el: HTMLInputElement | HTMLTextAreaElement | null,
+    token: string,
+  ) => {
+    insertAtCursor(el, String(value ?? ""), token, (s) => onChange(s));
+  };
 
   switch (spec.type) {
     case "boolean":
@@ -63,12 +108,21 @@ export function ParamField({
 
     case "text":
       return (
-        <textarea
-          value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value)}
-          rows={compact ? 2 : 5}
-          className={`${inputClass} resize-y font-mono`}
-        />
+        <div className="flex w-full items-start gap-1">
+          <textarea
+            ref={textRef}
+            value={String(value ?? "")}
+            onChange={(e) => onChange(e.target.value)}
+            rows={compact ? 2 : 5}
+            className={`${inputClass} resize-y font-mono`}
+          />
+          <VariablePicker
+            availableLetters={availableLetters}
+            letterHints={letterHints}
+            compact={compact}
+            onInsert={(t) => insertVar(textRef.current, t)}
+          />
+        </div>
       );
 
     case "kv":
@@ -122,26 +176,43 @@ export function ParamField({
 
     case "number":
       return (
-        <input
-          type="number"
-          value={String(value ?? "")}
-          min={spec.min}
-          max={spec.max}
-          step={spec.step ?? 1}
-          onChange={(e) => onChange(e.target.value)}
-          className={inputClass}
-        />
+        <div className="flex w-full items-center gap-1">
+          <input
+            ref={numberRef}
+            type="text"
+            inputMode="numeric"
+            value={String(value ?? "")}
+            onChange={(e) => onChange(e.target.value)}
+            className={inputClass}
+            placeholder={`${spec.min ?? ""}…${spec.max ?? ""}`}
+          />
+          <VariablePicker
+            availableLetters={availableLetters}
+            letterHints={letterHints}
+            compact={compact}
+            onInsert={(t) => insertVar(numberRef.current, t)}
+          />
+        </div>
       );
 
     case "string":
     default:
       return (
-        <input
-          type="text"
-          value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value)}
-          className={inputClass}
-        />
+        <div className="flex w-full items-center gap-1">
+          <input
+            ref={stringRef}
+            type="text"
+            value={String(value ?? "")}
+            onChange={(e) => onChange(e.target.value)}
+            className={inputClass}
+          />
+          <VariablePicker
+            availableLetters={availableLetters}
+            letterHints={letterHints}
+            compact={compact}
+            onInsert={(t) => insertVar(stringRef.current, t)}
+          />
+        </div>
       );
   }
 }

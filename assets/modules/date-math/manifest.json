@@ -1,0 +1,63 @@
+{
+  "id": "date-math",
+  "name": "Date / heure",
+  "description": "Manipule une date. Modes : « now » (date courante), « parse » (parse l'entrée), « add » / « subtract » (décalage en unités), « format » (sortie formatée), « diff » (écart entre 2 dates). Sorties : iso, epoch_ms, formatted, parts {y,m,d,h,mi,s,dow}.",
+  "version": "0.1.0",
+  "color": "#0d9488",
+  "configurable": true,
+  "inputs": [
+    { "name": "date", "label": "Date d'entrée (ISO, epoch ms ou nombre)", "type": "any" }
+  ],
+  "outputs": [
+    { "name": "iso", "label": "ISO 8601", "type": "string" },
+    { "name": "epoch_ms", "label": "Epoch (ms)", "type": "number" },
+    { "name": "formatted", "label": "Formaté", "type": "string" },
+    { "name": "parts", "label": "Parties {y,m,d,h,mi,s,ms,dow,doy}", "type": "any" },
+    { "name": "diff_ms", "label": "Différence (ms, mode diff)", "type": "number" }
+  ],
+  "params": [
+    {
+      "name": "mode",
+      "label": "Mode",
+      "type": "select",
+      "options": ["now", "parse", "add", "subtract", "format", "diff"],
+      "default": "now"
+    },
+    {
+      "name": "amount",
+      "label": "Quantité",
+      "type": "number",
+      "default": "1",
+      "step": 1,
+      "showIf": { "mode": ["add", "subtract"] }
+    },
+    {
+      "name": "unit",
+      "label": "Unité",
+      "type": "select",
+      "options": ["ms", "seconds", "minutes", "hours", "days", "weeks", "months", "years"],
+      "default": "days",
+      "showIf": { "mode": ["add", "subtract"] }
+    },
+    {
+      "name": "other",
+      "label": "Autre date (ISO ou epoch ms)",
+      "type": "string",
+      "default": "",
+      "showIf": { "mode": ["diff"] }
+    },
+    {
+      "name": "format",
+      "label": "Format de sortie (YYYY MM DD HH mm ss SSS)",
+      "type": "string",
+      "default": "YYYY-MM-DD HH:mm:ss"
+    },
+    {
+      "name": "tz",
+      "label": "Fuseau",
+      "type": "select",
+      "options": ["local", "utc"],
+      "default": "local"
+    }
+  ]
+}
