@@ -1,8 +1,8 @@
 {
   "id": "webhook-receive",
   "name": "Webhook entrant",
-  "description": "Reçoit des requêtes HTTP sur http://localhost:9999/webhook/<path>. La réponse renvoyée à l'appelant est entièrement paramétrable (statut, content-type, body, headers) avec substitution des données de la requête : {request.method}, {request.body}, {request.json.foo}, {request.query.bar}, {request.headers.user-agent}, et des variables d'env globales. Si un « Secret » est défini, le serveur exige Authorization: Bearer <secret>, X-Webhook-Secret, ou ?key=<secret> et renvoie 401 sinon.",
-  "version": "0.3.0",
+  "description": "Reçoit des requêtes HTTP sur http://<host>:<port-API>/webhook/<path>. Mode « immediate » : la réponse est rendue instantanément avec le body templated, le graphe tourne en arrière-plan. Mode « deferred » : la connexion reste ouverte jusqu'à un nœud rest-end (ou le timeout) — utilise rest-send pour streamer entre-temps. {request.body}, {request.json.foo}, {request.query.bar}, {request.headers.user-agent}, et les variables d'env globales sont disponibles dans les templates. Si un « Secret » est défini, le serveur exige Authorization: Bearer <secret>, X-Webhook-Secret, ou ?key=<secret> et renvoie 401 sinon.",
+  "version": "0.4.0",
   "color": "#0ea5e9",
   "entry": "module.py",
   "configurable": true,
@@ -12,7 +12,9 @@
     { "name": "body", "label": "Body brut", "type": "string" },
     { "name": "json", "label": "Body JSON parsé", "type": "any" },
     { "name": "query", "label": "Query params", "type": "any" },
-    { "name": "headers", "label": "Headers", "type": "any" }
+    { "name": "headers", "label": "Headers", "type": "any" },
+    { "name": "connectionId", "label": "ID unique de cette requête", "type": "string" },
+    { "name": "client", "label": "Client {ip, userAgent}", "type": "any" }
   ],
   "params": [
     {
@@ -28,10 +30,25 @@
       "default": ""
     },
     {
+      "name": "mode",
+      "label": "Mode de réponse",
+      "type": "select",
+      "options": ["immediate", "deferred"],
+      "default": "immediate"
+    },
+    {
+      "name": "timeout_ms",
+      "label": "Timeout deferred (ms, 0 = défaut 30000)",
+      "type": "string",
+      "default": "30000",
+      "showIf": { "mode": ["deferred"] }
+    },
+    {
       "name": "response_status",
       "label": "Status HTTP",
       "type": "string",
-      "default": "200"
+      "default": "200",
+      "showIf": { "mode": ["immediate"] }
     },
     {
       "name": "response_content_type",
@@ -43,19 +60,22 @@
         "text/html",
         "application/xml"
       ],
-      "default": "application/json"
+      "default": "application/json",
+      "showIf": { "mode": ["immediate"] }
     },
     {
       "name": "response_body",
       "label": "Body de réponse",
       "type": "text",
-      "default": "{\"ok\": true}"
+      "default": "{\"ok\": true}",
+      "showIf": { "mode": ["immediate"] }
     },
     {
       "name": "response_headers",
       "label": "Headers additionnels",
       "type": "kv",
-      "default": {}
+      "default": {},
+      "showIf": { "mode": ["immediate"] }
     }
   ]
 }

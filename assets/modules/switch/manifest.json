@@ -1,0 +1,66 @@
+{
+  "id": "switch",
+  "name": "Switch (routeur)",
+  "description": "Routeur multi-cas avec un nombre de cas configurable (1-12). Chaque cas a une valeur (mode « equals », exact match) ou une expression Python (mode « expression »). Le premier cas qui matche route la valeur entrante vers son socket de sortie ; si aucun ne matche, c'est « default » qui s'active. Idéal pour remplacer une cascade de bool-custom.",
+  "version": "0.3.0",
+  "color": "#a855f7",
+  "configurable": true,
+  "inputs": [
+    { "name": "value", "label": "Valeur testée", "type": "any" }
+  ],
+  "outputs": [
+    { "name": "default", "label": "Défaut (sinon)", "type": "any" }
+  ],
+  "dynamicOutputs": {
+    "countParam": "case_count",
+    "namePattern": "case{i}",
+    "labelPattern": "Cas {i}",
+    "type": "any",
+    "min": 1,
+    "max": 12
+  },
+  "params": [
+    {
+      "name": "case_count",
+      "label": "Nombre de cas",
+      "type": "number",
+      "default": "3",
+      "min": 1,
+      "max": 12,
+      "step": 1
+    },
+    {
+      "name": "mode",
+      "label": "Mode",
+      "type": "select",
+      "options": ["equals", "expression"],
+      "default": "equals"
+    },
+    {
+      "name": "compare",
+      "label": "Valeur à comparer (templated, ex. {a.status})",
+      "type": "string",
+      "default": "{a}",
+      "showIf": { "mode": ["equals"] }
+    },
+    {
+      "name": "case_sensitive",
+      "label": "Comparaison sensible à la casse",
+      "type": "boolean",
+      "default": true,
+      "showIf": { "mode": ["equals"] }
+    },
+    { "name": "case1", "label": "Cas 1", "type": "string", "default": "" },
+    { "name": "case2", "label": "Cas 2", "type": "string", "default": "", "showIf": { "case_count": { "gte": 2 } } },
+    { "name": "case3", "label": "Cas 3", "type": "string", "default": "", "showIf": { "case_count": { "gte": 3 } } },
+    { "name": "case4", "label": "Cas 4", "type": "string", "default": "", "showIf": { "case_count": { "gte": 4 } } },
+    { "name": "case5", "label": "Cas 5", "type": "string", "default": "", "showIf": { "case_count": { "gte": 5 } } },
+    { "name": "case6", "label": "Cas 6", "type": "string", "default": "", "showIf": { "case_count": { "gte": 6 } } },
+    { "name": "case7", "label": "Cas 7", "type": "string", "default": "", "showIf": { "case_count": { "gte": 7 } } },
+    { "name": "case8", "label": "Cas 8", "type": "string", "default": "", "showIf": { "case_count": { "gte": 8 } } },
+    { "name": "case9", "label": "Cas 9", "type": "string", "default": "", "showIf": { "case_count": { "gte": 9 } } },
+    { "name": "case10", "label": "Cas 10", "type": "string", "default": "", "showIf": { "case_count": { "gte": 10 } } },
+    { "name": "case11", "label": "Cas 11", "type": "string", "default": "", "showIf": { "case_count": { "gte": 11 } } },
+    { "name": "case12", "label": "Cas 12", "type": "string", "default": "", "showIf": { "case_count": { "gte": 12 } } }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "id": "ws-close",
+  "name": "WebSocket (fermer)",
+  "description": "Ferme une connexion WebSocket. Si connection_id est vide, le runtime utilise la connexion qui a déclenché ce graphe (ws-endpoint en amont). « * » ferme toutes (filtre optionnel par node_id ou path). Code conforme RFC 6455 (1000 = normal).",
+  "version": "0.2.0",
+  "color": "#06b6d4",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [
+    { "name": "connection_id", "label": "Connection ID", "type": "string" }
+  ],
+  "outputs": [
+    { "name": "connectionId", "label": "Connection ID (pass-through)", "type": "string" },
+    { "name": "closed", "label": "Connexions fermées", "type": "number" },
+    { "name": "misses", "label": "Connexions introuvables", "type": "number" }
+  ],
+  "params": [
+    {
+      "name": "connection_id",
+      "label": "Connection ID (vide = celle du trigger ws ; * = toutes)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "code",
+      "label": "Code de fermeture (RFC 6455)",
+      "type": "string",
+      "default": "1000"
+    },
+    {
+      "name": "reason",
+      "label": "Raison (texte, max 123 octets)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "filter_node_id",
+      "label": "Broadcast : filtre par node_id",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "filter_path",
+      "label": "Broadcast : filtre par path",
+      "type": "string",
+      "default": ""
+    }
+  ]
+}

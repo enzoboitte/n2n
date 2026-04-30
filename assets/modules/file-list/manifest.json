@@ -1,0 +1,34 @@
+{
+  "id": "file-list",
+  "name": "Lister fichiers",
+  "description": "Liste les entrées d'un dossier dans le sandbox ~/.n2n/data/. Renvoie un array d'objets {path, abs, kind, size, mtime}. recursive=true pour descendre dans les sous-dossiers. Géré par le runtime.",
+  "version": "0.1.0",
+  "color": "#22c55e",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [],
+  "outputs": [
+    { "name": "files", "label": "Entrées", "type": "any" },
+    { "name": "path", "label": "Chemin absolu listé", "type": "string" }
+  ],
+  "params": [
+    {
+      "name": "path",
+      "label": "Chemin (relatif → ~/.n2n/data/, vide = root du sandbox)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "recursive",
+      "label": "Récursif",
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "name": "include_stat",
+      "label": "Inclure size + mtime (plus lent)",
+      "type": "boolean",
+      "default": true
+    }
+  ]
+}

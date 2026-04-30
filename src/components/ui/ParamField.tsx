@@ -120,6 +120,19 @@ export function ParamField({
         />
       );
 
+    case "number":
+      return (
+        <input
+          type="number"
+          value={String(value ?? "")}
+          min={spec.min}
+          max={spec.max}
+          step={spec.step ?? 1}
+          onChange={(e) => onChange(e.target.value)}
+          className={inputClass}
+        />
+      );
+
     case "string":
     default:
       return (

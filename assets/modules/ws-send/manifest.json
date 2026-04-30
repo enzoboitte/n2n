@@ -1,0 +1,50 @@
+{
+  "id": "ws-send",
+  "name": "WebSocket (envoi)",
+  "description": "Envoie des données à une connexion WebSocket. Si connection_id est vide, le runtime utilise la connexion qui a déclenché ce graphe (ws-endpoint en amont). « * » broadcast à tous (filtre optionnel par node_id ou path).",
+  "version": "0.3.0",
+  "color": "#06b6d4",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [
+    { "name": "connection_id", "label": "Connection ID", "type": "string" },
+    { "name": "data", "label": "Données à envoyer (override du param)", "type": "any" }
+  ],
+  "outputs": [
+    { "name": "connectionId", "label": "Connection ID (pass-through pour chaîner)", "type": "string" },
+    { "name": "sent", "label": "Connexions atteintes", "type": "number" },
+    { "name": "misses", "label": "Connexions introuvables", "type": "number" }
+  ],
+  "params": [
+    {
+      "name": "connection_id",
+      "label": "Connection ID (vide = celle du trigger ws ; * = broadcast)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "data",
+      "label": "Contenu (utilisé si pas d'arête entrante)",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "name": "is_binary",
+      "label": "Frame binaire (data en base64)",
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "name": "filter_node_id",
+      "label": "Broadcast : filtre par node_id (vide = aucun filtre)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "filter_path",
+      "label": "Broadcast : filtre par path (vide = aucun filtre)",
+      "type": "string",
+      "default": ""
+    }
+  ]
+}

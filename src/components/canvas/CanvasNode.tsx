@@ -4,15 +4,17 @@ import { useCallback } from "react";
 import { ParamField } from "@/components/ui/ParamField";
 import { outputSocketPosition } from "@/lib/layout";
 import { paramVisible } from "@/lib/params";
-import type {
-  CanvasNode as CanvasNodeData,
-  ModuleManifest,
-  ParamSpec,
-  RunResult,
+import {
+  resolveNodeOutputs,
+  type CanvasNode as CanvasNodeData,
+  type ModuleManifest,
+  type ParamSpec,
+  type RunResult,
 } from "@/lib/types";
 
 const INLINE_TYPES: ParamSpec["type"][] = [
   "string",
+  "number",
   "select",
   "boolean",
   "env-key",
@@ -103,7 +105,7 @@ export function CanvasNode({
     [node.id, selected, onSelect, onContextMenu],
   );
 
-  const outputs = module?.outputs ?? [];
+  const outputs = resolveNodeOutputs(module, node.params);
   // Every node accepts incoming edges. Even modules with no declared inputs
   // receive values through `letters` and can reference them via {a}, {b}…
   // template substitution in any string param.
@@ -364,7 +366,10 @@ function ResultView({
     return <span className="text-slate-400">(vide)</span>;
   }
 
-  const isBranch = (module?.outputs.length ?? 0) > 1;
+  // Use the runtime's emitted entry count rather than the manifest, so
+  // dynamic-output modules (e.g. switch) get the same null-filter
+  // behavior as static branch modules.
+  const isBranch = entries.length > 1;
   const visible = isBranch
     ? entries.filter(([, v]) => v !== null && v !== undefined)
     : entries;

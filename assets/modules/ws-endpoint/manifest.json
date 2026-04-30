@@ -1,0 +1,45 @@
+{
+  "id": "ws-endpoint",
+  "name": "WebSocket (écoute)",
+  "description": "Expose un endpoint WebSocket sur un port choisi. Persiste la connexion : à chaque event (open / message / close), le sous-graphe en aval est déclenché avec la donnée + le connectionId qui distingue les clients. data est string pour les frames texte, base64 + isBinary=true pour les frames binaires. Pour répondre, utilise un nœud ws-send avec le connectionId. Géré par le runtime.",
+  "version": "0.1.0",
+  "color": "#06b6d4",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [],
+  "outputs": [
+    { "name": "event", "label": "Event (open/message/close)", "type": "string" },
+    { "name": "data", "label": "Données reçues (string ou base64)", "type": "string" },
+    { "name": "isBinary", "label": "Frame binaire ?", "type": "boolean" },
+    { "name": "connectionId", "label": "ID de connexion (stable durant la session)", "type": "string" },
+    { "name": "client", "label": "Client {ip, userAgent}", "type": "any" },
+    { "name": "params", "label": "Path params (:id, …)", "type": "any" },
+    { "name": "path", "label": "Path matché", "type": "string" }
+  ],
+  "params": [
+    {
+      "name": "port",
+      "label": "Port d'écoute",
+      "type": "string",
+      "default": "8080"
+    },
+    {
+      "name": "hostname",
+      "label": "Hostname / interface (0.0.0.0 = toutes)",
+      "type": "string",
+      "default": "0.0.0.0"
+    },
+    {
+      "name": "path",
+      "label": "Path (supports :param, ex. /chat/:room)",
+      "type": "string",
+      "default": "/"
+    },
+    {
+      "name": "secret",
+      "label": "Secret bearer (optionnel — Authorization, X-Api-Key, ?key=)",
+      "type": "string",
+      "default": ""
+    }
+  ]
+}

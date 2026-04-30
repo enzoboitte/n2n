@@ -1,0 +1,28 @@
+{
+  "id": "file-mkdir",
+  "name": "Créer dossier",
+  "description": "Crée un dossier dans le sandbox ~/.n2n/data/. recursive=true crée aussi les parents (équivalent mkdir -p). Idempotent : ne fail pas si le dossier existe déjà. Géré par le runtime.",
+  "version": "0.1.0",
+  "color": "#22c55e",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [],
+  "outputs": [
+    { "name": "path", "label": "Chemin absolu", "type": "string" },
+    { "name": "created", "label": "Créé ?", "type": "boolean" }
+  ],
+  "params": [
+    {
+      "name": "path",
+      "label": "Chemin (relatif → ~/.n2n/data/)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "recursive",
+      "label": "Créer les parents (mkdir -p)",
+      "type": "boolean",
+      "default": true
+    }
+  ]
+}

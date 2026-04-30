@@ -1,0 +1,28 @@
+{
+  "id": "file-delete",
+  "name": "Supprimer fichier / dossier",
+  "description": "Supprime un fichier dans le sandbox ~/.n2n/data/, ou un dossier (avec recursive=true). Refuse de supprimer le sandbox root ou $HOME. Géré par le runtime.",
+  "version": "0.1.0",
+  "color": "#ef4444",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [],
+  "outputs": [
+    { "name": "path", "label": "Chemin absolu", "type": "string" },
+    { "name": "removed", "label": "Supprimé ?", "type": "boolean" }
+  ],
+  "params": [
+    {
+      "name": "path",
+      "label": "Chemin (relatif → ~/.n2n/data/)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "recursive",
+      "label": "Récursif (pour les dossiers)",
+      "type": "boolean",
+      "default": false
+    }
+  ]
+}

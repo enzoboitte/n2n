@@ -1,0 +1,56 @@
+{
+  "id": "rest-end",
+  "name": "Réponse HTTP (fin)",
+  "description": "Envoie un chunk final (optionnel) puis ferme une connexion HTTP en attente (rest-endpoint OU webhook-receive en mode deferred). Si aucun rest-send n'a précédé, c'est ici qu'on définit le status / Content-Type / headers de la réponse complète ; sinon le stream est juste fermé. Si connection_id n'est ni câblé ni en param, le runtime utilise automatiquement la connexion qui a déclenché ce graphe.",
+  "version": "0.3.0",
+  "color": "#f59e0b",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [
+    { "name": "connection_id", "label": "Connection ID", "type": "string" },
+    { "name": "data", "label": "Chunk final (override du param)", "type": "any" }
+  ],
+  "outputs": [
+    { "name": "connectionId", "label": "Connection ID (pass-through)", "type": "string" },
+    { "name": "sent", "label": "Fermé ?", "type": "number" },
+    { "name": "misses", "label": "Connexion introuvable", "type": "number" }
+  ],
+  "params": [
+    {
+      "name": "connection_id",
+      "label": "Connection ID (vide = celle du trigger HTTP)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "data",
+      "label": "Chunk final (utilisé si pas d'arête entrante)",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "name": "is_binary",
+      "label": "Données binaires (data en base64)",
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "name": "status",
+      "label": "Status HTTP (utilisé si pas de rest-send avant)",
+      "type": "string",
+      "default": "200"
+    },
+    {
+      "name": "content_type",
+      "label": "Content-Type (utilisé si pas de rest-send avant)",
+      "type": "string",
+      "default": "application/json"
+    },
+    {
+      "name": "headers",
+      "label": "Headers additionnels (utilisés si pas de rest-send avant)",
+      "type": "kv",
+      "default": {}
+    }
+  ]
+}

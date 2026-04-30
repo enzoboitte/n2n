@@ -1,0 +1,56 @@
+{
+  "id": "rest-send",
+  "name": "Réponse HTTP (chunk)",
+  "description": "Envoie un chunk sur une connexion HTTP en attente (rest-endpoint OU webhook-receive en mode deferred), sans la fermer. Utile pour streamer (SSE, chunked transfer, progress). Le tout premier appel sur une connexion fixe le status / Content-Type / headers ; les suivants ne portent que la donnée. Si connection_id n'est ni câblé ni en param, le runtime utilise automatiquement la connexion qui a déclenché ce graphe.",
+  "version": "0.3.0",
+  "color": "#f59e0b",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [
+    { "name": "connection_id", "label": "Connection ID", "type": "string" },
+    { "name": "data", "label": "Données à envoyer (override du param)", "type": "any" }
+  ],
+  "outputs": [
+    { "name": "connectionId", "label": "Connection ID (pass-through pour chaîner)", "type": "string" },
+    { "name": "sent", "label": "Connexions atteintes", "type": "number" },
+    { "name": "misses", "label": "Connexions introuvables", "type": "number" }
+  ],
+  "params": [
+    {
+      "name": "connection_id",
+      "label": "Connection ID (vide = celle du trigger HTTP)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "data",
+      "label": "Contenu (utilisé si pas d'arête entrante)",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "name": "is_binary",
+      "label": "Données binaires (data en base64)",
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "name": "status",
+      "label": "Status HTTP (1er chunk uniquement, vide = 200)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "content_type",
+      "label": "Content-Type (1er chunk uniquement)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "headers",
+      "label": "Headers additionnels (1er chunk uniquement)",
+      "type": "kv",
+      "default": {}
+    }
+  ]
+}

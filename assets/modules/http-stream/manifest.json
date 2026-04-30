@@ -1,0 +1,73 @@
+{
+  "id": "http-stream",
+  "name": "HTTP streaming",
+  "description": "Appelle un endpoint HTTP en lecture streaming et parse la réponse selon le mode : sse (Server-Sent Events), ndjson (un JSON par ligne), lines (texte ligne par ligne), chunks (chaque morceau réseau brut). Renvoie events (array de tous les éléments parsés). Plug for-each derrière pour traiter chaque event individuellement. Géré par le runtime.",
+  "version": "0.1.0",
+  "color": "#f59e0b",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [
+    { "name": "body", "label": "Body (POST / PUT)", "type": "any" }
+  ],
+  "outputs": [
+    { "name": "events", "label": "Événements parsés", "type": "any" },
+    { "name": "status", "label": "Status HTTP", "type": "number" },
+    { "name": "count", "label": "Nombre d'événements", "type": "number" },
+    { "name": "truncated", "label": "Tronqué (max_events atteint) ?", "type": "boolean" }
+  ],
+  "params": [
+    {
+      "name": "method",
+      "label": "Méthode",
+      "type": "select",
+      "options": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "default": "GET"
+    },
+    {
+      "name": "url",
+      "label": "URL",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "mode",
+      "label": "Mode de parsing",
+      "type": "select",
+      "options": ["sse", "ndjson", "lines", "chunks"],
+      "default": "sse"
+    },
+    { "name": "headers", "label": "Headers", "type": "kv", "default": {} },
+    {
+      "name": "auth_type",
+      "label": "Authentification",
+      "type": "select",
+      "options": ["none", "bearer", "basic"],
+      "default": "none"
+    },
+    {
+      "name": "auth_value",
+      "label": "Token / user:pass",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "content_type",
+      "label": "Content-Type body",
+      "type": "string",
+      "default": ""
+    },
+    { "name": "body", "label": "Body (POST/PUT) — input override", "type": "text", "default": "" },
+    {
+      "name": "max_events",
+      "label": "Max événements (0 = illimité)",
+      "type": "string",
+      "default": "0"
+    },
+    {
+      "name": "timeout_ms",
+      "label": "Timeout total ms (0 = illimité)",
+      "type": "string",
+      "default": "0"
+    }
+  ]
+}

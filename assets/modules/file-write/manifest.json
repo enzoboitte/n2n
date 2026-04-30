@@ -1,0 +1,50 @@
+{
+  "id": "file-write",
+  "name": "Écrire fichier",
+  "description": "Écrit un fichier dans le sandbox ~/.n2n/data/. Le contenu peut venir de l'arête entrante (input `content`) ou du paramètre. Les chemins hors $HOME sont refusés. Géré par le runtime.",
+  "version": "0.1.0",
+  "color": "#22c55e",
+  "entry": "module.py",
+  "configurable": true,
+  "inputs": [
+    { "name": "content", "label": "Contenu", "type": "any" }
+  ],
+  "outputs": [
+    { "name": "path", "label": "Chemin absolu écrit", "type": "string" },
+    { "name": "bytes", "label": "Octets écrits", "type": "number" }
+  ],
+  "params": [
+    {
+      "name": "path",
+      "label": "Chemin (relatif → ~/.n2n/data/)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "name": "content",
+      "label": "Contenu (utilisé si pas d'arête entrante)",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "name": "mode",
+      "label": "Mode",
+      "type": "select",
+      "options": ["overwrite", "append", "create-only"],
+      "default": "overwrite"
+    },
+    {
+      "name": "encoding",
+      "label": "Encodage du contenu",
+      "type": "select",
+      "options": ["utf8", "base64"],
+      "default": "utf8"
+    },
+    {
+      "name": "create_dirs",
+      "label": "Créer les dossiers parents",
+      "type": "boolean",
+      "default": true
+    }
+  ]
+}
